@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intent-guard"
+version = "0.1.0"
+description = "MCP tool-call guardrails with static and semantic policy checks"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+  "PyYAML>=6.0.0",
+  "requests>=2.31.0",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+intent-guard-proxy = "intent_guard.proxy:main"
+
+[tool.setuptools.packages.find]
+include = ["intent_guard*"]
