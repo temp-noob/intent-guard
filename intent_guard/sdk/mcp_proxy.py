@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from intent_guard.sdk.engine import GuardDecision, IntentGuardEngine
 
-ApprovalCallback = Callable[[GuardDecision, dict[str, Any]], bool]
+ApprovalCallback = Callable[[GuardDecision, dict[str, Any]], bool | dict[str, Any]]
 LogCallback = Callable[[dict[str, Any]], None]
 
 
@@ -51,8 +51,10 @@ class MCPProxy:
         decision = self.engine.evaluate_tool_call(tool_name=tool_name, arguments=arguments, task_context=self.task_context)
 
         if not decision.allowed and self.approval_callback is not None and decision.requires_approval:
-            if self.approval_callback(decision, message):
-                decision = GuardDecision(allowed=True, reason="approved by user")
+            approval_result = self.approval_callback(decision, message)
+            if approval_result:
+                override = approval_result if isinstance(approval_result, dict) else None
+                decision = self.engine.build_override_decision(override=override)
 
         self._log_tool_call(tool_name, arguments, decision)
         if decision.allowed:
@@ -61,7 +63,19 @@ class MCPProxy:
         error = {
             "jsonrpc": message.get("jsonrpc", "2.0"),
             "id": message.get("id"),
-            "error": {"code": -32001, "message": f"IntentGuard blocked tool call: {decision.reason}"},
+            "error": {
+                "code": -32001,
+                "message": f"IntentGuard blocked tool call: {decision.reason}",
+                "data": {
+                    "decision_id": decision.decision_id,
+                    "decision_code": decision.code,
+                    "severity": decision.severity,
+                    "policy_name": decision.policy_name,
+                    "policy_version": decision.policy_version,
+                    "rule_id": decision.rule_id,
+                    "timestamp": decision.timestamp,
+                },
+            },
         }
         return False, error
 
@@ -71,6 +85,14 @@ class MCPProxy:
             "arguments": arguments,
             "allowed": decision.allowed,
             "reason": decision.reason,
+            "decision_id": decision.decision_id,
+            "decision_code": decision.code,
+            "severity": decision.severity,
+            "policy_name": decision.policy_name,
+            "policy_version": decision.policy_version,
+            "rule_id": decision.rule_id,
+            "timestamp": decision.timestamp,
+            "override": decision.override,
         }
         if self.logger is not None:
             self.logger(entry)
