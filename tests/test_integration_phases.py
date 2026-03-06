@@ -9,7 +9,7 @@ from intent_guard.sdk.providers import OllamaProvider
 
 def test_phase1_cli_interceptor_forwards_and_logs_tool_calls():
     logs: list[dict] = []
-    engine = IntentGuardEngine(policy={})
+    engine = IntentGuardEngine(policy={"name": "integration-policy", "version": "1.0"})
     proxy = MCPProxy(engine=engine, target_command=[], logger=logs.append)
 
     message = {
@@ -24,6 +24,11 @@ def test_phase1_cli_interceptor_forwards_and_logs_tool_calls():
     assert error is None
     assert logs[0]["tool"] == "read_file"
     assert logs[0]["allowed"] is True
+    assert logs[0]["decision_id"]
+    assert logs[0]["decision_code"] == "ALLOW_POLICY"
+    assert logs[0]["policy_name"] == "integration-policy"
+    assert logs[0]["policy_version"] == "1.0"
+    assert logs[0]["timestamp"].endswith("Z")
 
 
 def test_phase2_static_engine_blocks_forbidden_tool_and_protected_path(tmp_path: Path):
@@ -45,6 +50,11 @@ static_rules:
     too_many_tokens = engine.evaluate_tool_call("generate", {"max_tokens": 101})
 
     assert forbidden.allowed is False
+    assert forbidden.code == "BLOCK_FORBIDDEN_TOOL"
+    assert forbidden.severity == "high"
+    assert forbidden.rule_id == "static.forbidden_tools"
+    assert forbidden.decision_id
+    assert forbidden.timestamp.endswith("Z")
     assert protected.allowed is False
     assert too_many_tokens.allowed is False
 
@@ -90,7 +100,7 @@ def test_phase4_feedback_loop_pause_and_resume():
 
     def approve(decision, _request):
         asked.append(decision.reason)
-        return True
+        return {"who": "alice", "why": "manual security approval", "ttl": "2026-03-06T00:00:00Z"}
 
     proxy_allow = MCPProxy(engine=engine, target_command=[], approval_callback=approve)
     message = {
@@ -109,3 +119,33 @@ def test_phase4_feedback_loop_pause_and_resume():
     assert should_forward is False
     assert error is not None
     assert "IntentGuard blocked tool call" in error["error"]["message"]
+    assert error["error"]["data"]["decision_code"] == "BLOCK_PROTECTED_PATH"
+
+
+def test_phase4_approval_override_fields_are_recorded():
+    logs: list[dict] = []
+    policy = {"name": "approval-policy", "version": "2.0", "static_rules": {"protected_paths": [".env"]}}
+    engine = IntentGuardEngine(policy=policy)
+    proxy = MCPProxy(
+        engine=engine,
+        target_command=[],
+        logger=logs.append,
+        approval_callback=lambda *_: {"who": "ops-user", "why": "break-glass", "ttl": "2026-03-06T12:00:00Z"},
+    )
+
+    message = {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "tools/call",
+        "params": {"name": "write_file", "arguments": {"path": ".env", "content": "X=2"}},
+    }
+    should_forward, error = proxy.process_client_message(message)
+
+    assert should_forward is True
+    assert error is None
+    assert logs[0]["decision_code"] == "ALLOW_OVERRIDE"
+    assert logs[0]["override"] == {
+        "who": "ops-user",
+        "why": "break-glass",
+        "ttl": "2026-03-06T12:00:00Z",
+    }

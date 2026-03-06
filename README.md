@@ -107,6 +107,28 @@ decision = guard.evaluate("write_file", {"path": "src/auth/config.py"})
 print(decision.allowed, decision.reason)
 ```
 
+## GuardDecision contract (stable)
+
+`GuardDecision` now includes machine-readable metadata for enforcement and analytics:
+
+- `decision_id` (UUID)
+- `code`
+- `severity`
+- `policy_name`
+- `policy_version`
+- `rule_id`
+- `timestamp` (UTC ISO-8601)
+- `override` (`who`/`why`/`ttl`, when manually approved)
+
+Backward compatibility:
+- Existing fields `allowed`, `reason`, `requires_approval`, `semantic_score` are unchanged.
+- New fields are always present with safe defaults, so existing consumers can ignore them.
+
+Versioning/migration strategy:
+- Keep parsing logic tolerant of unknown fields.
+- Use `policy_version` + `code` + `rule_id` for downstream contract evolution and dashboards.
+- Prefer adding new fields over changing/removing existing field semantics.
+
 ## Usage examples with popular tools
 
 ### 1) Claude Code (MCP server proxy)
@@ -190,3 +212,8 @@ export TWINE_PASSWORD="<artifactory-password-or-token>"
   --repository-url "https://<artifactory-host>/artifactory/api/pypi/<pypi-repo>/local" \
   dist/*
 ```
+
+## Integration testing and Docker
+
+Current integration tests are in-process (`tests/test_integration_phases.py`) and do not require a database or cache service.
+If a future change adds external DB/cache dependencies, run those services in Docker for tests (same pattern as `temp-noob/rule-engine`) so test setup remains reproducible.

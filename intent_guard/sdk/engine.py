@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Iterable
+from uuid import uuid4
 
 import yaml
 
@@ -17,6 +19,14 @@ class GuardDecision:
     reason: str
     requires_approval: bool = False
     semantic_score: float = 1.0
+    decision_id: str = field(default_factory=lambda: str(uuid4()))
+    code: str = "ALLOW_POLICY"
+    severity: str = "info"
+    policy_name: str = "default-policy"
+    policy_version: str = "unspecified"
+    rule_id: str = "policy.default"
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+    override: dict[str, Any] | None = None
 
 
 class IntentGuardEngine:
@@ -39,27 +49,60 @@ class IntentGuardEngine:
         semantic_decision = self._run_semantic_checks(tool_name, arguments, task_context)
         if semantic_decision is not None:
             return semantic_decision
-        return GuardDecision(allowed=True, reason="allowed by policy")
+        return self._decision(
+            allowed=True,
+            reason="allowed by policy",
+            code="ALLOW_POLICY",
+            severity="info",
+            rule_id="policy.default",
+        )
 
     def _run_static_checks(self, tool_name: str, arguments: dict[str, Any]) -> GuardDecision:
         static_rules = self.policy.get("static_rules", {})
         forbidden_tools = set(static_rules.get("forbidden_tools", []))
         if tool_name in forbidden_tools:
-            return GuardDecision(False, f"tool '{tool_name}' is forbidden", requires_approval=True)
+            return self._decision(
+                allowed=False,
+                reason=f"tool '{tool_name}' is forbidden",
+                requires_approval=True,
+                code="BLOCK_FORBIDDEN_TOOL",
+                severity="high",
+                rule_id="static.forbidden_tools",
+            )
 
         max_tokens = static_rules.get("max_tokens_per_call")
         token_count = self._extract_token_count(arguments)
         if isinstance(max_tokens, int) and token_count is not None and token_count > max_tokens:
-            return GuardDecision(False, f"token count {token_count} exceeds max {max_tokens}", requires_approval=True)
+            return self._decision(
+                allowed=False,
+                reason=f"token count {token_count} exceeds max {max_tokens}",
+                requires_approval=True,
+                code="BLOCK_TOKEN_LIMIT",
+                severity="medium",
+                rule_id="static.max_tokens_per_call",
+            )
 
         protected_paths = static_rules.get("protected_paths", [])
         if protected_paths:
             for path in self._extract_path_candidates(arguments):
                 for pattern in protected_paths:
                     if self._matches_path(path, pattern):
-                        return GuardDecision(False, f"path '{path}' matches protected pattern '{pattern}'", requires_approval=True)
+                        return self._decision(
+                            allowed=False,
+                            reason=f"path '{path}' matches protected pattern '{pattern}'",
+                            requires_approval=True,
+                            code="BLOCK_PROTECTED_PATH",
+                            severity="high",
+                            rule_id="static.protected_paths",
+                        )
 
-        return GuardDecision(True, "static checks passed")
+        return self._decision(
+            allowed=True,
+            reason="static checks passed",
+            code="ALLOW_STATIC",
+            severity="info",
+            rule_id="static.passed",
+        )
 
     def _run_semantic_checks(
         self,
@@ -75,13 +118,53 @@ class IntentGuardEngine:
         prompt = self._build_semantic_prompt(tool_name, arguments, task_context, semantic_rules.get("constraints", []))
         verdict = self.provider.judge(prompt)
         if verdict.safe and verdict.score >= threshold:
-            return GuardDecision(True, "semantic checks passed", semantic_score=verdict.score)
-        return GuardDecision(
-            False,
-            f"semantic check failed (score={verdict.score:.2f})",
+            return self._decision(
+                allowed=True,
+                reason="semantic checks passed",
+                semantic_score=verdict.score,
+                code="ALLOW_SEMANTIC",
+                severity="info",
+                rule_id="semantic.threshold",
+            )
+        return self._decision(
+            allowed=False,
+            reason=f"semantic check failed (score={verdict.score:.2f})",
             requires_approval=True,
             semantic_score=verdict.score,
+            code="BLOCK_SEMANTIC",
+            severity="high",
+            rule_id="semantic.threshold",
         )
+
+    def build_override_decision(self, override: dict[str, Any] | None = None) -> GuardDecision:
+        normalized = self._normalize_override(override)
+        return self._decision(
+            allowed=True,
+            reason="approved by user",
+            requires_approval=False,
+            code="ALLOW_OVERRIDE",
+            severity="warning",
+            rule_id="override.manual",
+            override=normalized,
+        )
+
+    def _decision(self, allowed: bool, reason: str, **kwargs: Any) -> GuardDecision:
+        return GuardDecision(
+            allowed=allowed,
+            reason=reason,
+            policy_name=str(self.policy.get("name", "default-policy")),
+            policy_version=str(self.policy.get("version", "unspecified")),
+            **kwargs,
+        )
+
+    @staticmethod
+    def _normalize_override(override: dict[str, Any] | None) -> dict[str, Any]:
+        override = override or {}
+        return {
+            "who": override.get("who"),
+            "why": override.get("why"),
+            "ttl": override.get("ttl"),
+        }
 
     @staticmethod
     def _extract_token_count(arguments: dict[str, Any]) -> int | None:
