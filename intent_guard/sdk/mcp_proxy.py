@@ -81,7 +81,8 @@ def webhook_approval_callback(
 
 
 def _decode_urlsafe_b64(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
+    padding_length = (-len(value)) % 4
+    padding = "=" * padding_length
     return urlsafe_b64decode(value + padding)
 
 
@@ -109,15 +110,16 @@ class MCPProxy:
         arguments = params.get("arguments") or params.get("args") or {}
         decision = self.engine.evaluate_tool_call(tool_name=tool_name, arguments=arguments, task_context=self.task_context)
 
-        if not decision.allowed and decision.requires_approval and self._has_break_glass_override():
-            decision = self.engine.build_override_decision(
-                override={"who": "ci-break-glass", "why": "break-glass token accepted", "ttl": None}
-            )
-        elif not decision.allowed and self.approval_callback is not None and decision.requires_approval:
-            approval_result = self.approval_callback(decision, message)
-            if approval_result:
-                override = approval_result if isinstance(approval_result, dict) else None
-                decision = self.engine.build_override_decision(override=override)
+        if not decision.allowed and decision.requires_approval:
+            if self._has_break_glass_override():
+                decision = self.engine.build_override_decision(
+                    override={"who": "ci-break-glass", "why": "break-glass token accepted", "ttl": None}
+                )
+            elif self.approval_callback is not None:
+                approval_result = self.approval_callback(decision, message)
+                if approval_result:
+                    override = approval_result if isinstance(approval_result, dict) else None
+                    decision = self.engine.build_override_decision(override=override)
 
         self._log_tool_call(tool_name, arguments, decision)
         if decision.allowed:
@@ -227,7 +229,7 @@ class MCPProxy:
                 return False
             payload = json.loads(_decode_urlsafe_b64(payload_part).decode("utf-8"))
             exp = int(payload.get("exp", 0))
-            return exp > int(time.time())
+            return exp >= int(time.time())
         except (ValueError, json.JSONDecodeError, TypeError):
             return False
 

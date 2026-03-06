@@ -107,7 +107,7 @@ python -m intent_guard.proxy \
 ### CI break-glass options
 
 - `INTENT_GUARD_BREAK_GLASS_TOKEN`: if set, flagged calls are auto-approved with override metadata.
-- `INTENT_GUARD_BREAK_GLASS_SIGNED_TOKEN` + `INTENT_GUARD_BREAK_GLASS_SIGNING_KEY`: optional HMAC-signed break-glass token for CI. Token format is `<base64url(json payload)>.<base64url(signature)>` where signature is `HMAC-SHA256(payload_part, signing_key)` and payload contains future `exp` (unix timestamp).
+- `INTENT_GUARD_BREAK_GLASS_SIGNED_TOKEN` + `INTENT_GUARD_BREAK_GLASS_SIGNING_KEY`: optional HMAC-signed break-glass token for CI. Token format is `<base64url(json payload)>.<base64url(signature)>` where signature is `HMAC-SHA256(payload_part, signing_key)` and payload contains future `exp` (unix timestamp), for example `{"exp": 4102444800}`.
 - `INTENT_GUARD_APPROVAL_AUTH_TOKEN`: bearer token added to webhook approval requests.
 
 ## SDK usage (Python)
