@@ -59,6 +59,41 @@ static_rules:
     assert too_many_tokens.allowed is False
 
 
+def test_phase2_static_engine_applies_custom_policies(tmp_path: Path):
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        """
+version: "1.0"
+custom_policies:
+  tool_name: tool_x
+  args:
+    all_present: ["path", "content", "mode"]
+    should_not_present: ["sudo", "force", "recursive"]
+""",
+        encoding="utf-8",
+    )
+
+    engine = IntentGuardEngine.from_policy_file(policy_path)
+
+    missing_required = engine.evaluate_tool_call("tool_x", {"path": "README.md", "content": "x"})
+    has_forbidden = engine.evaluate_tool_call(
+        "tool_x", {"path": "README.md", "content": "x", "mode": "write", "sudo": True}
+    )
+    passes = engine.evaluate_tool_call("tool_x", {"path": "README.md", "content": "x", "mode": "write"})
+    other_tool = engine.evaluate_tool_call("tool_y", {"sudo": True})
+
+    assert missing_required.allowed is False
+    assert missing_required.code == "BLOCK_CUSTOM_POLICY_MISSING_ARGS"
+    assert missing_required.rule_id == "custom_policies.1.args.all_present"
+
+    assert has_forbidden.allowed is False
+    assert has_forbidden.code == "BLOCK_CUSTOM_POLICY_FORBIDDEN_ARGS"
+    assert has_forbidden.rule_id == "custom_policies.1.args.should_not_present"
+
+    assert passes.allowed is True
+    assert other_tool.allowed is True
+
+
 def test_phase3_ollama_semantic_judging(monkeypatch):
     class FakeResponse:
         def raise_for_status(self):

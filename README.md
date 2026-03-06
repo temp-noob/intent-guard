@@ -13,6 +13,7 @@ The current implementation covers all 4 roadmap phases from `agent.md`:
    - `forbidden_tools`
    - `protected_paths` (glob/fnmatch style)
    - `max_tokens_per_call`
+   - `custom_policies` (tool-specific argument requirements/forbidden arguments)
 3. **Llama Guard Integration via Ollama (Phase 3)**  
    `intent_guard/sdk/providers.py` implements `OllamaProvider`, calling `POST /api/generate` and parsing `SAFE`/`UNSAFE` + score.
 4. **Pause & Resume Feedback Loop (Phase 4)**  
@@ -64,6 +65,12 @@ static_rules:
   forbidden_tools: ["delete_database", "purge_all"]
   protected_paths: ["/etc/*", ".env", "src/auth/*"]
   max_tokens_per_call: 4000
+
+custom_policies:
+  - tool_name: write_file
+    args:
+      all_present: ["path", "content"]
+      should_not_present: ["sudo"]
 
 semantic_rules:
   guardrail_model: llama-guard-3-8b

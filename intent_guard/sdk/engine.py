@@ -96,6 +96,35 @@ class IntentGuardEngine:
                             rule_id="static.protected_paths",
                         )
 
+        for index, rule in enumerate(self._iter_custom_policies(), start=1):
+            if rule.get("tool_name") != tool_name:
+                continue
+
+            args_rule = rule.get("args", {})
+            required_args = args_rule.get("all_present", [])
+            missing = [name for name in required_args if name not in arguments]
+            if missing:
+                return self._decision(
+                    allowed=False,
+                    reason=f"tool '{tool_name}' is missing required arguments: {', '.join(missing)}",
+                    requires_approval=True,
+                    code="BLOCK_CUSTOM_POLICY_MISSING_ARGS",
+                    severity="medium",
+                    rule_id=f"custom_policies.{index}.args.all_present",
+                )
+
+            forbidden_args = args_rule.get("should_not_present", [])
+            present_forbidden = [name for name in forbidden_args if name in arguments]
+            if present_forbidden:
+                return self._decision(
+                    allowed=False,
+                    reason=f"tool '{tool_name}' contains forbidden arguments: {', '.join(present_forbidden)}",
+                    requires_approval=True,
+                    code="BLOCK_CUSTOM_POLICY_FORBIDDEN_ARGS",
+                    severity="high",
+                    rule_id=f"custom_policies.{index}.args.should_not_present",
+                )
+
         return self._decision(
             allowed=True,
             reason="static checks passed",
@@ -103,6 +132,14 @@ class IntentGuardEngine:
             severity="info",
             rule_id="static.passed",
         )
+
+    def _iter_custom_policies(self) -> Iterable[dict[str, Any]]:
+        raw_custom_policies = self.policy.get("custom_policies", [])
+        if isinstance(raw_custom_policies, dict):
+            return [raw_custom_policies]
+        if not isinstance(raw_custom_policies, list):
+            return []
+        return [rule for rule in raw_custom_policies if isinstance(rule, dict)]
 
     def _run_semantic_checks(
         self,
