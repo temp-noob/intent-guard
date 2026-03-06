@@ -134,12 +134,12 @@ class IntentGuardEngine:
         )
 
     def _iter_custom_policies(self) -> Iterable[dict[str, Any]]:
-        custom_policies = self.policy.get("custom_policies", [])
-        if isinstance(custom_policies, dict):
-            custom_policies = [custom_policies]
-        if not isinstance(custom_policies, list):
+        raw_custom_policies = self.policy.get("custom_policies", [])
+        if isinstance(raw_custom_policies, dict):
+            return [raw_custom_policies]
+        if not isinstance(raw_custom_policies, list):
             return []
-        return [rule for rule in custom_policies if isinstance(rule, dict)]
+        return [rule for rule in raw_custom_policies if isinstance(rule, dict)]
 
     def _run_semantic_checks(
         self,

@@ -67,18 +67,20 @@ version: "1.0"
 custom_policies:
   tool_name: tool_x
   args:
-    all_present: ["a", "b", "c"]
-    should_not_present: ["d", "e", "f"]
+    all_present: ["path", "content", "mode"]
+    should_not_present: ["sudo", "force", "recursive"]
 """,
         encoding="utf-8",
     )
 
     engine = IntentGuardEngine.from_policy_file(policy_path)
 
-    missing_required = engine.evaluate_tool_call("tool_x", {"a": 1, "b": 2})
-    has_forbidden = engine.evaluate_tool_call("tool_x", {"a": 1, "b": 2, "c": 3, "d": 4})
-    passes = engine.evaluate_tool_call("tool_x", {"a": 1, "b": 2, "c": 3})
-    other_tool = engine.evaluate_tool_call("tool_y", {"d": 4})
+    missing_required = engine.evaluate_tool_call("tool_x", {"path": "README.md", "content": "x"})
+    has_forbidden = engine.evaluate_tool_call(
+        "tool_x", {"path": "README.md", "content": "x", "mode": "write", "sudo": True}
+    )
+    passes = engine.evaluate_tool_call("tool_x", {"path": "README.md", "content": "x", "mode": "write"})
+    other_tool = engine.evaluate_tool_call("tool_y", {"sudo": True})
 
     assert missing_required.allowed is False
     assert missing_required.code == "BLOCK_CUSTOM_POLICY_MISSING_ARGS"
