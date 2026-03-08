@@ -6,11 +6,12 @@ from hashlib import sha256
 from hmac import new as hmac_new
 from pathlib import Path
 
+import pytest
 import requests
 
 from intent_guard.sdk.engine import IntentGuardEngine
 from intent_guard.sdk.mcp_proxy import MCPProxy, webhook_approval_callback
-from intent_guard.sdk.providers import OllamaProvider
+from intent_guard.sdk.providers import LiteLLMProvider, OllamaProvider, SemanticProviderUnavailable, SemanticVerdict
 
 
 def test_phase1_cli_interceptor_forwards_and_logs_tool_calls():
@@ -267,3 +268,89 @@ def test_phase4_break_glass_signed_token_validates_signature_and_expiry(monkeypa
     should_forward, error = proxy.process_client_message(message)
     assert should_forward is True
     assert error is None
+
+
+def test_semantic_mode_advisory_allows_but_records_alert():
+    class FakeProvider:
+        def judge(self, _prompt):
+            return SemanticVerdict(safe=False, score=0.1, raw="UNSAFE score: 0.1")
+
+    engine = IntentGuardEngine(
+        policy={"semantic_rules": {"mode": "advisory", "critical_intent_threshold": 0.85, "constraints": []}},
+        provider=FakeProvider(),
+    )
+
+    decision = engine.evaluate_tool_call("edit_file", {"path": "src/auth/handler.py"}, task_context="touch auth")
+    assert decision.allowed is True
+    assert decision.code == "ALLOW_SEMANTIC_ADVISORY"
+    assert decision.severity == "warning"
+
+
+def test_semantic_provider_fail_mode_can_be_per_tool():
+    class FailingProvider:
+        def judge(self, _prompt):
+            raise SemanticProviderUnavailable("simulated outage")
+
+    engine = IntentGuardEngine(
+        policy={
+            "semantic_rules": {
+                "mode": "enforce",
+                "provider_fail_mode": {"default": "advisory", "by_tool": {"delete_database": "enforce"}},
+                "constraints": [],
+            }
+        },
+        provider=FailingProvider(),
+    )
+
+    critical = engine.evaluate_tool_call("delete_database", {}, task_context="maintenance")
+    non_critical = engine.evaluate_tool_call("read_docs", {}, task_context="maintenance")
+
+    assert critical.allowed is False
+    assert critical.code == "BLOCK_SEMANTIC_PROVIDER_FAILURE"
+    assert non_critical.allowed is True
+    assert non_critical.code == "ALLOW_SEMANTIC_PROVIDER_FAILURE"
+
+
+def test_ollama_provider_circuit_breaker_short_circuits_after_threshold(monkeypatch):
+    calls = {"count": 0}
+
+    def fail_post(*_args, **_kwargs):
+        calls["count"] += 1
+        raise requests.Timeout("simulated timeout")
+
+    monkeypatch.setattr("requests.post", fail_post)
+    monkeypatch.setattr("intent_guard.sdk.providers.time.sleep", lambda *_args, **_kwargs: None)
+    provider = OllamaProvider(
+        model="llama-guard3",
+        retry_attempts=0,
+        circuit_breaker_failures=1,
+        circuit_breaker_reset_seconds=60,
+    )
+
+    with pytest.raises(SemanticProviderUnavailable):
+        provider.judge("first call")
+    with pytest.raises(SemanticProviderUnavailable):
+        provider.judge("second call")
+
+    assert calls["count"] == 1
+
+
+def test_litellm_provider_uses_retries_and_env_model(monkeypatch):
+    attempts = {"count": 0}
+
+    def fake_completion(**kwargs):
+        attempts["count"] += 1
+        assert kwargs["model"] == "claude-3-5-sonnet-20241022"
+        if attempts["count"] == 1:
+            raise RuntimeError("transient error")
+        return {"choices": [{"message": {"content": "SAFE score: 0.92"}}]}
+
+    monkeypatch.setenv("LLM_MODEL", "claude-3-5-sonnet-20241022")
+    monkeypatch.setattr("intent_guard.sdk.providers.litellm_completion", fake_completion)
+    monkeypatch.setattr("intent_guard.sdk.providers.time.sleep", lambda *_args, **_kwargs: None)
+    provider = LiteLLMProvider(retry_attempts=1)
+
+    verdict = provider.judge("prompt")
+    assert verdict.safe is True
+    assert verdict.score == 0.92
+    assert attempts["count"] == 2

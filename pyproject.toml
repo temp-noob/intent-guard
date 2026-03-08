@@ -12,6 +12,7 @@ license = "MIT"
 dependencies = [
   "PyYAML>=6.0.0",
   "requests>=2.31.0",
+  "litellm>=1.82.0",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",

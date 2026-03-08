@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import yaml
 
-from intent_guard.sdk.providers import GuardrailProvider
+from intent_guard.sdk.providers import GuardrailProvider, SemanticProviderUnavailable
 
 
 @dataclass
@@ -148,12 +148,30 @@ class IntentGuardEngine:
         task_context: str | None,
     ) -> GuardDecision | None:
         semantic_rules = self.policy.get("semantic_rules", {})
-        if not semantic_rules or self.provider is None:
+        if not semantic_rules:
             return None
+
+        mode = self._normalize_semantic_mode(semantic_rules.get("mode", "enforce"))
+        if mode == "off":
+            return None
+        if self.provider is None:
+            return self._semantic_provider_failure_decision(
+                tool_name=tool_name,
+                semantic_rules=semantic_rules,
+                reason="semantic provider is not configured",
+            )
 
         threshold = float(semantic_rules.get("critical_intent_threshold", 0.85))
         prompt = self._build_semantic_prompt(tool_name, arguments, task_context, semantic_rules.get("constraints", []))
-        verdict = self.provider.judge(prompt)
+        try:
+            verdict = self.provider.judge(prompt)
+        except (SemanticProviderUnavailable, RuntimeError) as exc:
+            return self._semantic_provider_failure_decision(
+                tool_name=tool_name,
+                semantic_rules=semantic_rules,
+                reason=str(exc) or "semantic provider failed",
+            )
+
         if verdict.safe and verdict.score >= threshold:
             return self._decision(
                 allowed=True,
@@ -162,6 +180,15 @@ class IntentGuardEngine:
                 code="ALLOW_SEMANTIC",
                 severity="info",
                 rule_id="semantic.threshold",
+            )
+        if mode == "advisory":
+            return self._decision(
+                allowed=True,
+                reason=f"semantic advisory alert (score={verdict.score:.2f})",
+                semantic_score=verdict.score,
+                code="ALLOW_SEMANTIC_ADVISORY",
+                severity="warning",
+                rule_id="semantic.advisory",
             )
         return self._decision(
             allowed=False,
@@ -172,6 +199,48 @@ class IntentGuardEngine:
             severity="high",
             rule_id="semantic.threshold",
         )
+
+    def _semantic_provider_failure_decision(
+        self,
+        tool_name: str,
+        semantic_rules: dict[str, Any],
+        reason: str,
+    ) -> GuardDecision:
+        fail_mode = self._semantic_provider_fail_mode(semantic_rules, tool_name)
+        if fail_mode == "enforce":
+            return self._decision(
+                allowed=False,
+                reason=f"semantic provider unavailable: {reason}",
+                requires_approval=True,
+                code="BLOCK_SEMANTIC_PROVIDER_FAILURE",
+                severity="high",
+                rule_id="semantic.provider_failure",
+            )
+        return self._decision(
+            allowed=True,
+            reason=f"semantic provider unavailable ({fail_mode} fail mode): {reason}",
+            code="ALLOW_SEMANTIC_PROVIDER_FAILURE",
+            severity="warning" if fail_mode == "advisory" else "info",
+            rule_id="semantic.provider_failure",
+        )
+
+    def _semantic_provider_fail_mode(self, semantic_rules: dict[str, Any], tool_name: str) -> str:
+        configured = semantic_rules.get("provider_fail_mode", "advisory")
+        if isinstance(configured, dict):
+            by_tool = configured.get("by_tool", {})
+            if isinstance(by_tool, dict):
+                specific = by_tool.get(tool_name)
+                if specific is not None:
+                    return self._normalize_semantic_mode(specific)
+            return self._normalize_semantic_mode(configured.get("default", "advisory"))
+        return self._normalize_semantic_mode(configured)
+
+    @staticmethod
+    def _normalize_semantic_mode(value: Any) -> str:
+        normalized = str(value or "enforce").strip().lower()
+        if normalized in {"off", "enforce", "advisory"}:
+            return normalized
+        return "enforce"
 
     def build_override_decision(self, override: dict[str, Any] | None = None) -> GuardDecision:
         normalized = self._normalize_override(override)
