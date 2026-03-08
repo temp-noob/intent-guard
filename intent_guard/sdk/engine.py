@@ -165,7 +165,7 @@ class IntentGuardEngine:
         prompt = self._build_semantic_prompt(tool_name, arguments, task_context, semantic_rules.get("constraints", []))
         try:
             verdict = self.provider.judge(prompt)
-        except (SemanticProviderUnavailable, RuntimeError) as exc:
+        except SemanticProviderUnavailable as exc:
             return self._semantic_provider_failure_decision(
                 tool_name=tool_name,
                 semantic_rules=semantic_rules,

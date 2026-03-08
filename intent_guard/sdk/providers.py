@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -31,6 +32,21 @@ class SemanticProviderUnavailable(RuntimeError):
     pass
 
 
+def _parse_verdict(raw_text: str) -> SemanticVerdict:
+    upper = raw_text.upper()
+    safe = "UNSAFE" not in upper and "SAFE" in upper
+    score = _extract_score(raw_text, default=1.0 if safe else 0.0)
+    return SemanticVerdict(safe=safe, score=score, raw=raw_text)
+
+
+def _extract_score(text: str, default: float) -> float:
+    match = re.search(r"([01](?:\.\d+)?)", text)
+    if not match:
+        return default
+    value = float(match.group(1))
+    return max(0.0, min(1.0, value))
+
+
 class _ResilientProvider:
     def __init__(
         self,
@@ -50,20 +66,24 @@ class _ResilientProvider:
         self.circuit_breaker_reset_seconds = max(1.0, float(circuit_breaker_reset_seconds))
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
+        self._lock = threading.Lock()
 
     def _before_request(self) -> None:
-        if self._circuit_open_until > time.monotonic():
-            raise SemanticProviderUnavailable("semantic provider circuit breaker is open")
+        with self._lock:
+            if self._circuit_open_until > time.monotonic():
+                raise SemanticProviderUnavailable("semantic provider circuit breaker is open")
 
     def _on_success(self) -> None:
-        self._consecutive_failures = 0
-        self._circuit_open_until = 0.0
+        with self._lock:
+            self._consecutive_failures = 0
+            self._circuit_open_until = 0.0
 
     def _on_failure(self) -> None:
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self.circuit_breaker_failures:
-            self._circuit_open_until = time.monotonic() + self.circuit_breaker_reset_seconds
-            self._consecutive_failures = 0
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.circuit_breaker_failures:
+                self._circuit_open_until = time.monotonic() + self.circuit_breaker_reset_seconds
+                self._consecutive_failures = 0
 
     def _sleep_with_jitter(self, attempt: int) -> None:
         base_delay = min(self.retry_max_delay_seconds, self.retry_base_delay_seconds * (2**attempt))
@@ -112,29 +132,16 @@ class OllamaProvider:
                 response.raise_for_status()
                 data = response.json()
                 raw_text = data.get("response", "")
-                upper = raw_text.upper()
-                safe = "UNSAFE" not in upper and "SAFE" in upper
-                score = self._extract_score(raw_text, default=1.0 if safe else 0.0)
                 self._resilience._on_success()
-                return SemanticVerdict(safe=safe, score=score, raw=raw_text)
+                return _parse_verdict(raw_text)
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
                 if attempt < self._resilience.retry_attempts:
                     self._resilience._sleep_with_jitter(attempt)
                     continue
                 self._resilience._on_failure()
-                if isinstance(exc, SemanticProviderUnavailable):
-                    raise
                 raise SemanticProviderUnavailable("semantic provider request failed after retries") from last_error
-        raise SemanticProviderUnavailable("semantic provider request failed")
-
-    @staticmethod
-    def _extract_score(text: str, default: float) -> float:
-        match = re.search(r"([01](?:\.\d+)?)", text)
-        if not match:
-            return default
-        value = float(match.group(1))
-        return max(0.0, min(1.0, value))
+        raise SemanticProviderUnavailable("semantic provider request failed") from last_error
 
 
 class LiteLLMProvider:
@@ -177,19 +184,16 @@ class LiteLLMProvider:
                     timeout=self.timeout,
                 )
                 raw_text = self._extract_text(response)
-                upper = raw_text.upper()
-                safe = "UNSAFE" not in upper and "SAFE" in upper
-                score = OllamaProvider._extract_score(raw_text, default=1.0 if safe else 0.0)
                 self._resilience._on_success()
-                return SemanticVerdict(safe=safe, score=score, raw=raw_text)
-            except Exception as exc:  # noqa: BLE001
+                return _parse_verdict(raw_text)
+            except (RuntimeError, ValueError, TypeError, requests.RequestException) as exc:
                 last_error = exc
                 if attempt < self._resilience.retry_attempts:
                     self._resilience._sleep_with_jitter(attempt)
                     continue
                 self._resilience._on_failure()
                 raise SemanticProviderUnavailable("semantic provider request failed after retries") from last_error
-        raise SemanticProviderUnavailable("semantic provider request failed")
+        raise SemanticProviderUnavailable("semantic provider request failed") from last_error
 
     @staticmethod
     def _extract_text(response: object) -> str:

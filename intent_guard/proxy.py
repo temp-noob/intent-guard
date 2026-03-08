@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 
 import yaml
@@ -44,7 +45,13 @@ def _load_dotenv(path: str = ".env") -> None:
                 continue
             key, value = stripped.split("=", 1)
             key = key.strip()
-            value = value.strip().strip("'\"")
+            value = value.strip()
+            try:
+                parsed = shlex.split(value, posix=True)
+                if parsed:
+                    value = parsed[0]
+            except ValueError:
+                pass
             os.environ.setdefault(key, value)
 
 
