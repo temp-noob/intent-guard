@@ -89,7 +89,9 @@ python -m intent_guard.proxy \
   --policy schema/policy.yaml \
   --target "npx @modelcontextprotocol/server-filesystem /path/to/repo" \
   --model llama-guard3 \
-  --ask-approval
+  --approval-webhook "https://approval.internal/intent-guard" \
+  --approval-timeout 10 \
+  --approval-default-action deny
 ```
 
 ### Flags
@@ -98,6 +100,15 @@ python -m intent_guard.proxy \
 - `--model`: optional Ollama model name for semantic checks
 - `--task`: optional task context (or set `INTENT_GUARD_TASK`)
 - `--ask-approval`: prompt user before allowing flagged calls
+- `--approval-webhook`: call this webhook for non-interactive approval decisions
+- `--approval-timeout`: timeout (seconds) for webhook approvals
+- `--approval-default-action`: `allow` or `deny` when webhook approval times out/fails
+
+### CI break-glass options
+
+- `INTENT_GUARD_BREAK_GLASS_TOKEN`: if set, flagged calls are auto-approved with override metadata.
+- `INTENT_GUARD_BREAK_GLASS_SIGNED_TOKEN` + `INTENT_GUARD_BREAK_GLASS_SIGNING_KEY`: optional HMAC-signed break-glass token for CI. Token format is `<base64url(json payload)>.<base64url(signature)>` where signature is `HMAC-SHA256(payload_part, signing_key)` and payload contains future `exp` (unix timestamp), for example `{"exp": 4102444800}`.
+- `INTENT_GUARD_APPROVAL_AUTH_TOKEN`: bearer token added to webhook approval requests.
 
 ## SDK usage (Python)
 

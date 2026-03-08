@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
 import threading
+import time
+from base64 import urlsafe_b64decode
+from hashlib import sha256
+from hmac import compare_digest, new as hmac_new
 from typing import Any, Callable
+
+import requests
 
 from intent_guard.sdk.engine import GuardDecision, IntentGuardEngine
 
@@ -24,6 +31,59 @@ def terminal_approval_prompt(decision: GuardDecision, request: dict[str, Any]) -
             return answer in {"y", "yes"}
     except OSError:
         return False
+
+
+def webhook_approval_callback(
+    webhook_url: str,
+    timeout_seconds: float = 10.0,
+    default_action: str = "deny",
+    auth_token: str | None = None,
+) -> ApprovalCallback:
+    default_allow = default_action.lower() == "allow"
+
+    def callback(decision: GuardDecision, request: dict[str, Any]) -> bool | dict[str, Any]:
+        payload = {
+            "decision": {
+                "decision_id": decision.decision_id,
+                "reason": decision.reason,
+                "code": decision.code,
+                "severity": decision.severity,
+                "policy_name": decision.policy_name,
+                "policy_version": decision.policy_version,
+                "rule_id": decision.rule_id,
+                "timestamp": decision.timestamp,
+            },
+            "request": {
+                "id": request.get("id"),
+                "method": request.get("method"),
+                "params": request.get("params", {}),
+            },
+        }
+        headers = {"Content-Type": "application/json"}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        try:
+            response = requests.post(webhook_url, json=payload, headers=headers, timeout=timeout_seconds)
+            response.raise_for_status()
+            body = response.json()
+        except (requests.RequestException, ValueError):
+            return default_allow
+
+        approved = body.get("approved")
+        if approved is None:
+            return default_allow
+        if not approved:
+            return False
+        override = body.get("override")
+        return override if isinstance(override, dict) else True
+
+    return callback
+
+
+def _decode_urlsafe_b64(value: str) -> bytes:
+    padding_length = (-len(value)) % 4
+    padding = "=" * padding_length
+    return urlsafe_b64decode(value + padding)
 
 
 class MCPProxy:
@@ -50,11 +110,16 @@ class MCPProxy:
         arguments = params.get("arguments") or params.get("args") or {}
         decision = self.engine.evaluate_tool_call(tool_name=tool_name, arguments=arguments, task_context=self.task_context)
 
-        if not decision.allowed and self.approval_callback is not None and decision.requires_approval:
-            approval_result = self.approval_callback(decision, message)
-            if approval_result:
-                override = approval_result if isinstance(approval_result, dict) else None
-                decision = self.engine.build_override_decision(override=override)
+        if not decision.allowed and decision.requires_approval:
+            if self._has_break_glass_override():
+                decision = self.engine.build_override_decision(
+                    override={"who": "ci-break-glass", "why": "break-glass token accepted", "ttl": None}
+                )
+            elif self.approval_callback is not None:
+                approval_result = self.approval_callback(decision, message)
+                if approval_result:
+                    override = approval_result if isinstance(approval_result, dict) else None
+                    decision = self.engine.build_override_decision(override=override)
 
         self._log_tool_call(tool_name, arguments, decision)
         if decision.allowed:
@@ -142,6 +207,31 @@ class MCPProxy:
 
         child.stdin.close()
         return child.wait()
+
+    @staticmethod
+    def _has_break_glass_override() -> bool:
+        break_glass_token = os.environ.get("INTENT_GUARD_BREAK_GLASS_TOKEN")
+        if break_glass_token:
+            return True
+
+        signed_token = os.environ.get("INTENT_GUARD_BREAK_GLASS_SIGNED_TOKEN")
+        signing_key = os.environ.get("INTENT_GUARD_BREAK_GLASS_SIGNING_KEY")
+        if not signed_token or not signing_key:
+            return False
+        return MCPProxy._verify_signed_break_glass_token(signed_token, signing_key)
+
+    @staticmethod
+    def _verify_signed_break_glass_token(token: str, signing_key: str) -> bool:
+        try:
+            payload_part, signature_part = token.split(".", 1)
+            expected_signature = hmac_new(signing_key.encode("utf-8"), payload_part.encode("utf-8"), sha256).digest()
+            if not compare_digest(_decode_urlsafe_b64(signature_part), expected_signature):
+                return False
+            payload = json.loads(_decode_urlsafe_b64(payload_part).decode("utf-8"))
+            exp = int(payload.get("exp", 0))
+            return exp >= int(time.time())
+        except (ValueError, json.JSONDecodeError, TypeError):
+            return False
 
 
 def parse_target_command(target: str) -> list[str]:

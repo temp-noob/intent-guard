@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import base64
+import json
+from hashlib import sha256
+from hmac import new as hmac_new
 from pathlib import Path
 
+import requests
+
 from intent_guard.sdk.engine import IntentGuardEngine
-from intent_guard.sdk.mcp_proxy import MCPProxy
+from intent_guard.sdk.mcp_proxy import MCPProxy, webhook_approval_callback
 from intent_guard.sdk.providers import OllamaProvider
 
 
@@ -184,3 +190,80 @@ def test_phase4_approval_override_fields_are_recorded():
         "why": "break-glass",
         "ttl": "2026-03-06T12:00:00Z",
     }
+
+
+def test_phase4_webhook_approval_timeout_uses_default_action_allow(monkeypatch):
+    policy = {"static_rules": {"protected_paths": [".env"]}}
+    engine = IntentGuardEngine(policy=policy)
+
+    def fake_post(*_args, **_kwargs):
+        raise requests.Timeout("simulated timeout")
+
+    monkeypatch.setattr("requests.post", fake_post)
+    callback = webhook_approval_callback(
+        webhook_url="https://approval.internal/approve",
+        timeout_seconds=0.01,
+        default_action="allow",
+    )
+    proxy = MCPProxy(engine=engine, target_command=[], approval_callback=callback)
+    message = {
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "tools/call",
+        "params": {"name": "write_file", "arguments": {"path": ".env", "content": "X=3"}},
+    }
+
+    should_forward, error = proxy.process_client_message(message)
+    assert should_forward is True
+    assert error is None
+
+
+def test_phase4_break_glass_env_allows_without_prompt(monkeypatch):
+    policy = {"static_rules": {"protected_paths": [".env"]}}
+    engine = IntentGuardEngine(policy=policy)
+    prompted = False
+
+    def should_not_run(*_args, **_kwargs):
+        nonlocal prompted
+        prompted = True
+        return False
+
+    monkeypatch.setenv("INTENT_GUARD_BREAK_GLASS_TOKEN", "enabled")
+    proxy = MCPProxy(engine=engine, target_command=[], approval_callback=should_not_run)
+    message = {
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "tools/call",
+        "params": {"name": "write_file", "arguments": {"path": ".env", "content": "X=4"}},
+    }
+
+    should_forward, error = proxy.process_client_message(message)
+    assert should_forward is True
+    assert error is None
+    assert prompted is False
+
+
+def test_phase4_break_glass_signed_token_validates_signature_and_expiry(monkeypatch):
+    policy = {"static_rules": {"protected_paths": [".env"]}}
+    engine = IntentGuardEngine(policy=policy)
+    signing_key = "test-signing-key"
+    payload_raw = json.dumps({"exp": 4_102_444_800}).encode("utf-8")
+    payload_part = base64.urlsafe_b64encode(payload_raw).decode("utf-8").rstrip("=")
+    signature_part = base64.urlsafe_b64encode(
+        hmac_new(signing_key.encode("utf-8"), payload_part.encode("utf-8"), sha256).digest()
+    ).decode("utf-8").rstrip("=")
+    token = f"{payload_part}.{signature_part}"
+
+    monkeypatch.setenv("INTENT_GUARD_BREAK_GLASS_SIGNED_TOKEN", token)
+    monkeypatch.setenv("INTENT_GUARD_BREAK_GLASS_SIGNING_KEY", signing_key)
+    proxy = MCPProxy(engine=engine, target_command=[], approval_callback=lambda *_: False)
+    message = {
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "tools/call",
+        "params": {"name": "write_file", "arguments": {"path": ".env", "content": "X=5"}},
+    }
+
+    should_forward, error = proxy.process_client_message(message)
+    assert should_forward is True
+    assert error is None
