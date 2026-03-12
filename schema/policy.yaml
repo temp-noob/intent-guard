@@ -12,8 +12,21 @@ static_rules:
   max_tokens_per_call: 4000
 
 semantic_rules:
+  provider: ollama
+  mode: enforce
   guardrail_model: llama-guard-3-8b
   critical_intent_threshold: 0.85
+  retry_attempts: 2
+  retry_base_delay_seconds: 0.25
+  retry_max_delay_seconds: 2.0
+  retry_jitter_ratio: 0.2
+  circuit_breaker_failures: 3
+  circuit_breaker_reset_seconds: 30
+  provider_fail_mode:
+    default: advisory
+    by_tool:
+      delete_database: enforce
+      purge_all: enforce
   constraints:
     - intent: modify_source_code
       allowed_scope: Actions must only affect UI components or styles.

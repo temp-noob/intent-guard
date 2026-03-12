@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
 from intent_guard.sdk.engine import IntentGuardEngine
 from intent_guard.sdk.mcp_proxy import MCPProxy
-from intent_guard.sdk.providers import GuardrailProvider, OllamaProvider
+from intent_guard.sdk.providers import GuardrailProvider, LiteLLMProvider, OllamaProvider
 
 
 class IntentGuardSDK:
@@ -20,6 +21,8 @@ class IntentGuardSDK:
         resolved_provider = provider
         if resolved_provider is None and local_model:
             resolved_provider = OllamaProvider(local_model)
+        if resolved_provider is None and os.environ.get("LLM_MODEL"):
+            resolved_provider = LiteLLMProvider()
         self.engine = IntentGuardEngine.from_policy_file(policy_path=policy_path, provider=resolved_provider)
         self.task_context = task_context
         self.approval_callback = approval_callback

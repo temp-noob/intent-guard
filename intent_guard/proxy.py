@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
+
+import yaml
 
 from intent_guard.sdk.engine import IntentGuardEngine
 from intent_guard.sdk.mcp_proxy import MCPProxy, parse_target_command, terminal_approval_prompt, webhook_approval_callback
-from intent_guard.sdk.providers import OllamaProvider
+from intent_guard.sdk.providers import LiteLLMProvider, OllamaProvider
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,14 +35,74 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_dotenv(path: str = ".env") -> None:
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            try:
+                parsed = shlex.split(value, posix=True)
+                if parsed:
+                    value = parsed[0]
+            except ValueError:
+                pass
+            os.environ.setdefault(key, value)
+
+
+def _build_provider(args: argparse.Namespace, semantic_rules: dict) -> OllamaProvider | LiteLLMProvider | None:
+    if not semantic_rules:
+        return None
+
+    retry_attempts = int(semantic_rules.get("retry_attempts", 2))
+    retry_base_delay_seconds = float(semantic_rules.get("retry_base_delay_seconds", 0.25))
+    retry_max_delay_seconds = float(semantic_rules.get("retry_max_delay_seconds", 2.0))
+    retry_jitter_ratio = float(semantic_rules.get("retry_jitter_ratio", 0.2))
+    circuit_breaker_failures = int(semantic_rules.get("circuit_breaker_failures", 3))
+    circuit_breaker_reset_seconds = float(semantic_rules.get("circuit_breaker_reset_seconds", 30.0))
+    provider_timeout_seconds = float(semantic_rules.get("provider_timeout_seconds", 5.0))
+
+    provider_name = str(semantic_rules.get("provider", "")).strip().lower()
+    if provider_name == "litellm" or (provider_name != "ollama" and os.environ.get("LLM_MODEL")):
+        return LiteLLMProvider(
+            timeout=provider_timeout_seconds,
+            retry_attempts=retry_attempts,
+            retry_base_delay_seconds=retry_base_delay_seconds,
+            retry_max_delay_seconds=retry_max_delay_seconds,
+            retry_jitter_ratio=retry_jitter_ratio,
+            circuit_breaker_failures=circuit_breaker_failures,
+            circuit_breaker_reset_seconds=circuit_breaker_reset_seconds,
+        )
+
+    model = args.model or semantic_rules.get("guardrail_model")
+    if model:
+        return OllamaProvider(
+            model=model,
+            timeout=provider_timeout_seconds,
+            retry_attempts=retry_attempts,
+            retry_base_delay_seconds=retry_base_delay_seconds,
+            retry_max_delay_seconds=retry_max_delay_seconds,
+            retry_jitter_ratio=retry_jitter_ratio,
+            circuit_breaker_failures=circuit_breaker_failures,
+            circuit_breaker_reset_seconds=circuit_breaker_reset_seconds,
+        )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _load_dotenv()
 
-    policy_engine = IntentGuardEngine.from_policy_file(
-        args.policy,
-        provider=OllamaProvider(args.model) if args.model else None,
-    )
+    with open(args.policy, "r", encoding="utf-8") as handle:
+        policy = yaml.safe_load(handle) or {}
+    provider = _build_provider(args, policy.get("semantic_rules", {}))
+    policy_engine = IntentGuardEngine(policy=policy, provider=provider)
     task_context = args.task or os.environ.get("INTENT_GUARD_TASK")
     approval_callback = None
     if args.approval_webhook:

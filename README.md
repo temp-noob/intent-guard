@@ -14,8 +14,11 @@ The current implementation covers all 4 roadmap phases from `agent.md`:
    - `protected_paths` (glob/fnmatch style)
    - `max_tokens_per_call`
    - `custom_policies` (tool-specific argument requirements/forbidden arguments)
-3. **Llama Guard Integration via Ollama (Phase 3)**  
-   `intent_guard/sdk/providers.py` implements `OllamaProvider`, calling `POST /api/generate` and parsing `SAFE`/`UNSAFE` + score.
+3. **Semantic Guardrail Providers (Phase 3)**  
+   `intent_guard/sdk/providers.py` supports:
+   - `OllamaProvider` (`POST /api/generate`)
+   - `LiteLLMProvider` (`litellm.completion`) using `LLM_MODEL` and `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` from env
+   Both providers include retries (exponential backoff + jitter) and a circuit breaker.
 4. **Pause & Resume Feedback Loop (Phase 4)**  
    `terminal_approval_prompt` provides interactive approval for flagged calls (`Allow? [y/N]`).
 
@@ -73,8 +76,20 @@ custom_policies:
       should_not_present: ["sudo"]
 
 semantic_rules:
+  provider: ollama # or litellm
+  mode: enforce # off | enforce | advisory
   guardrail_model: llama-guard-3-8b
   critical_intent_threshold: 0.85
+  retry_attempts: 2
+  retry_base_delay_seconds: 0.25
+  retry_max_delay_seconds: 2.0
+  retry_jitter_ratio: 0.2
+  circuit_breaker_failures: 3
+  circuit_breaker_reset_seconds: 30
+  provider_fail_mode:
+    default: advisory # fail-open
+    by_tool:
+      delete_database: enforce # fail-closed
   constraints:
     - intent: modify_source_code
       allowed_scope: Actions must only affect UI components or styles.
@@ -103,6 +118,39 @@ python -m intent_guard.proxy \
 - `--approval-webhook`: call this webhook for non-interactive approval decisions
 - `--approval-timeout`: timeout (seconds) for webhook approvals
 - `--approval-default-action`: `allow` or `deny` when webhook approval times out/fails
+
+### Semantic mode and provider failure behavior
+
+`semantic_rules.mode` controls normal semantic enforcement:
+- `off`: semantic check disabled
+- `enforce`: semantic failures block tool calls
+- `advisory`: semantic failures are logged as warnings but calls are allowed
+
+`semantic_rules.provider_fail_mode` controls behavior when semantic provider is unavailable:
+- supports `default` and per-tool `by_tool` override
+- values use the same mode set: `off|enforce|advisory`
+
+Behavior matrix for tool criticality tiers (example mapping):
+
+| Tool tier | `provider_fail_mode` | Outcome on provider outage |
+|---|---|---|
+| Critical tools | `enforce` | Fail-closed (block + approval required) |
+| Standard tools | `advisory` | Fail-open with warning decision |
+| Low-risk tools | `off` | Fail-open without warning severity |
+
+Define tiers by assigning tools in `provider_fail_mode.by_tool`.
+
+### LiteLLM provider
+
+To use the API provider, set in `.env` (or process env):
+
+```bash
+LLM_MODEL=claude-3-5-sonnet-20241022
+ANTHROPIC_API_KEY=...
+# or OPENAI_API_KEY=...
+```
+
+Then set `semantic_rules.provider: litellm` (or just set `LLM_MODEL` and omit explicit provider).
 
 ### CI break-glass options
 
