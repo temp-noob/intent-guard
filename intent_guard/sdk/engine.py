@@ -34,6 +34,10 @@ class IntentGuardEngine:
         self.policy = policy or {}
         self.provider = provider
 
+    def reload_policy(self, policy: dict[str, Any]) -> None:
+        """Hot-swap the policy dict. In-flight evaluations may use old policy."""
+        self.policy = policy
+
     @classmethod
     def from_policy_file(cls, policy_path: str | Path, provider: GuardrailProvider | None = None) -> "IntentGuardEngine":
         with open(policy_path, "r", encoding="utf-8") as handle:
