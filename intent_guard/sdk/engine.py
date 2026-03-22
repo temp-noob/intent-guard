@@ -152,6 +152,22 @@ class IntentGuardEngine:
                             rule_id="static.injection_patterns",
                         )
 
+        sensitive_patterns = static_rules.get("sensitive_data_patterns", [])
+        if sensitive_patterns:
+            for string_val in self._extract_all_strings(arguments):
+                for pat_config in sensitive_patterns:
+                    pat_name = pat_config.get("name", "unknown")
+                    pat_regex = pat_config.get("pattern", "")
+                    if pat_regex and re.search(pat_regex, string_val):
+                        return self._decision(
+                            allowed=False,
+                            reason=f"sensitive data detected: {pat_name}",
+                            requires_approval=True,
+                            code="BLOCK_SENSITIVE_DATA",
+                            severity="high",
+                            rule_id="static.sensitive_data_patterns",
+                        )
+
         return self._decision(
             allowed=True,
             reason="static checks passed",
@@ -317,6 +333,16 @@ class IntentGuardEngine:
             if isinstance(value, int):
                 return value
         return None
+
+    def _extract_all_strings(self, value: Any) -> Iterable[str]:
+        if isinstance(value, dict):
+            for nested in value.values():
+                yield from self._extract_all_strings(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from self._extract_all_strings(nested)
+        elif isinstance(value, str):
+            yield value
 
     def _extract_path_candidates(self, value: Any, parent_key: str = "") -> Iterable[str]:
         if isinstance(value, dict):
