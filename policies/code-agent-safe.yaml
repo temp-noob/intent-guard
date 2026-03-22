@@ -1,0 +1,41 @@
+version: "1.0"
+name: "code-agent-safe"
+
+# Conservative guardrails for AI coding agents.
+# Blocks destructive operations and protects sensitive files.
+# Suitable for most development workflows.
+
+static_rules:
+  forbidden_tools:
+    - delete_database
+    - drop_table
+    - purge_all
+    - truncate_table
+    - format_disk
+    - rm_rf
+
+  protected_paths:
+    - .env
+    - .env.*
+    - "*.pem"
+    - "*.key"
+    - "*.cert"
+    - .ssh/*
+    - .aws/*
+    - .git/config
+    - secrets/*
+    - credentials/*
+    - /etc/*
+
+  max_tokens_per_call: 8000
+
+# Semantic rules are optional. Uncomment to enable LLM-based intent analysis.
+# semantic_rules:
+#   provider: ollama
+#   mode: advisory
+#   guardrail_model: llama-guard-3-8b
+#   critical_intent_threshold: 0.85
+#   constraints:
+#     - intent: modify_source_code
+#       allowed_scope: Application code changes only
+#       forbidden_scope: Infrastructure, CI/CD, or deployment configs
