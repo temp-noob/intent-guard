@@ -32,6 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="deny",
         help="Action when approval webhook times out or fails",
     )
+    parser.add_argument("--watch-policy", action="store_true", help="Watch policy file for changes and reload")
+    parser.add_argument("--advisory", action="store_true", help="Advisory mode: log violations but never block")
     return parser
 
 
@@ -119,7 +121,17 @@ def main(argv: list[str] | None = None) -> int:
         target_command=parse_target_command(args.target),
         task_context=task_context,
         approval_callback=approval_callback,
+        advisory_mode=args.advisory,
     )
+    if args.watch_policy:
+        from intent_guard.sdk.watcher import PolicyWatcher
+
+        watcher = PolicyWatcher(
+            policy_path=args.policy,
+            on_reload=policy_engine.reload_policy,
+        )
+        watcher.start()
+
     return proxy.run_stdio()
 
 
