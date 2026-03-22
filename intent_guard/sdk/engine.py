@@ -42,6 +42,14 @@ class IntentGuardEngine:
     def from_policy_file(cls, policy_path: str | Path, provider: GuardrailProvider | None = None) -> "IntentGuardEngine":
         with open(policy_path, "r", encoding="utf-8") as handle:
             policy = yaml.safe_load(handle) or {}
+        from intent_guard.sdk.validator import validate_policy
+
+        errors = validate_policy(policy)
+        if errors:
+            import sys
+
+            for err in errors:
+                sys.stderr.write(f"Policy warning: {err}\\n")
         return cls(policy=policy, provider=provider)
 
     def evaluate_tool_call(self, tool_name: str, arguments: dict[str, Any] | None, task_context: str | None = None) -> GuardDecision:
