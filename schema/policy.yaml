@@ -21,6 +21,15 @@ static_rules:
     - "pretend you are"
     - "override.*policy"
     - "bypass.*security"
+  sensitive_data_patterns:
+    - name: "AWS Access Key"
+      pattern: "AKIA[0-9A-Z]{16}"
+    - name: "GitHub Token"
+      pattern: "gh[ps]_[A-Za-z0-9_]{36,}"
+    - name: "Email Address"
+      pattern: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+    - name: "SSN"
+      pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
 
 semantic_rules:
   provider: ollama
