@@ -1,0 +1,15 @@
+version: "1.0"
+name: "minimal"
+
+# Minimal policy to get started with IntentGuard.
+# Blocks only the most dangerous operations.
+# Customize by adding more rules from the other templates.
+
+static_rules:
+  forbidden_tools:
+    - delete_database
+    - purge_all
+  protected_paths:
+    - .env
+    - "*.key"
+    - "*.pem"

@@ -10,6 +10,17 @@ static_rules:
     - .env
     - src/auth/*
   max_tokens_per_call: 4000
+  injection_patterns:
+    - "ignore previous instructions"
+    - "ignore all prior"
+    - "disregard.*instructions"
+    - "you are now"
+    - "new instructions:"
+    - "system prompt:"
+    - "\\bact as\\b"
+    - "pretend you are"
+    - "override.*policy"
+    - "bypass.*security"
 
 semantic_rules:
   provider: ollama

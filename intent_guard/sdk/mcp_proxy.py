@@ -94,12 +94,14 @@ class MCPProxy:
         approval_callback: ApprovalCallback | None = None,
         task_context: str | None = None,
         logger: LogCallback | None = None,
+        advisory_mode: bool = False,
     ):
         self.engine = engine
         self.target_command = target_command
         self.approval_callback = approval_callback
         self.task_context = task_context
         self.logger = logger
+        self.advisory_mode = advisory_mode
 
     def process_client_message(self, message: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         if message.get("method") != "tools/call":
@@ -110,7 +112,7 @@ class MCPProxy:
         arguments = params.get("arguments") or params.get("args") or {}
         decision = self.engine.evaluate_tool_call(tool_name=tool_name, arguments=arguments, task_context=self.task_context)
 
-        if not decision.allowed and decision.requires_approval:
+        if not self.advisory_mode and not decision.allowed and decision.requires_approval:
             if self._has_break_glass_override():
                 decision = self.engine.build_override_decision(
                     override={"who": "ci-break-glass", "why": "break-glass token accepted", "ttl": None}
@@ -122,6 +124,10 @@ class MCPProxy:
                     decision = self.engine.build_override_decision(override=override)
 
         self._log_tool_call(tool_name, arguments, decision)
+
+        if self.advisory_mode:
+            return True, None
+
         if decision.allowed:
             return True, None
 
@@ -158,6 +164,7 @@ class MCPProxy:
             "rule_id": decision.rule_id,
             "timestamp": decision.timestamp,
             "override": decision.override,
+            "would_block": not decision.allowed,
         }
         if self.logger is not None:
             self.logger(entry)

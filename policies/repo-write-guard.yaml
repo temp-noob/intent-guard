@@ -1,0 +1,49 @@
+version: "1.0"
+name: "repo-write-guard"
+
+# Strict guardrails for repository write protection.
+# Prevents modification of CI/CD, infrastructure, and security-critical files.
+# Use when agents should only modify application code, not config/infra.
+
+static_rules:
+  forbidden_tools:
+    - delete_database
+    - drop_table
+    - purge_all
+    - exec_sql
+    - run_migration
+
+  protected_paths:
+    - .env
+    - .env.*
+    - .github/*
+    - .gitlab-ci.yml
+    - Dockerfile
+    - docker-compose*.yml
+    - "*.tf"
+    - "*.tfvars"
+    - Makefile
+    - package-lock.json
+    - yarn.lock
+    - poetry.lock
+    - Gemfile.lock
+    - go.sum
+    - requirements.txt
+    - setup.py
+    - pyproject.toml
+    - .gitignore
+    - LICENSE
+    - "*.pem"
+    - "*.key"
+
+  max_tokens_per_call: 4000
+
+custom_policies:
+  - tool_name: write_file
+    args:
+      all_present:
+        - path
+        - content
+      should_not_present:
+        - force
+        - overwrite_protected
