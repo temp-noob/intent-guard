@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -324,8 +325,8 @@ class IntentGuardEngine:
 
     @staticmethod
     def _matches_path(path: str, pattern: str) -> bool:
-        normalized_path = path.lstrip("./")
-        normalized_pattern = pattern.lstrip("./")
+        normalized_path = os.path.normpath(path)
+        normalized_pattern = os.path.normpath(pattern)
         return (
             fnmatch(path, pattern)
             or fnmatch(normalized_path, normalized_pattern)
