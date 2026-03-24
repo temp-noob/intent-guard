@@ -120,6 +120,42 @@ python -m intent_guard.proxy \
 - `--approval-timeout`: timeout (seconds) for webhook approvals
 - `--approval-default-action`: `allow` or `deny` when webhook approval times out/fails
 
+## Native hook integration
+
+IntentGuard can run as the policy engine behind native hooks in Claude Code, Copilot, and Cursor.
+
+### Evaluate command
+
+Use the unified command:
+
+```bash
+intent-guard evaluate --policy schema/policy.yaml
+```
+
+Input:
+- Reads a hook payload JSON object from stdin
+- Supports generic keys like `tool_name`, `arguments`, `task_context`
+- Also supports nested payloads (`params.name`, `params.arguments`) and common aliases (`tool_input`, `args`, `prompt`)
+
+Output:
+- Prints a `GuardDecision` JSON object to stdout
+- Exit code `0` for allow, `1` for block, `2` for invalid input
+
+### Hook config templates
+
+Template files are shipped under `hooks/`:
+- `hooks/claude-code/settings.json`
+- `hooks/copilot/hooks.json`
+- `hooks/cursor/hooks.json`
+
+Each template invokes:
+
+```bash
+cat | intent-guard evaluate --policy schema/policy.yaml
+```
+
+This lets platform-native hooks call IntentGuard directly instead of wrapping only MCP servers.
+
 ### Semantic mode and provider failure behavior
 
 `semantic_rules.mode` controls normal semantic enforcement:
