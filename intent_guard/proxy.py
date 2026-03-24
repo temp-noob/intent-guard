@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="deny",
         help="Action when approval webhook times out or fails",
     )
+    parser.add_argument("--advisory", action="store_true", help="Advisory mode: log violations but never block")
     return parser
 
 
@@ -119,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         target_command=parse_target_command(args.target),
         task_context=task_context,
         approval_callback=approval_callback,
+        advisory_mode=args.advisory,
     )
     return proxy.run_stdio()
 
