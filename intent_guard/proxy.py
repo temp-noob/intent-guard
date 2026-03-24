@@ -15,7 +15,8 @@ from intent_guard.sdk.providers import LiteLLMProvider, OllamaProvider
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="IntentGuard MCP proxy")
     parser.add_argument("--policy", required=True, help="Path to policy YAML file")
-    parser.add_argument("--target", required=True, help="Target MCP command")
+    parser.add_argument("--target", default=None, help="Target MCP command")
+    parser.add_argument("--validate", action="store_true", help="Validate policy file and exit")
     parser.add_argument("--model", default=None, help="Guardrail model override")
     parser.add_argument("--task", default=None, help="Current task context")
     parser.add_argument("--ask-approval", action="store_true", help="Prompt before allowing flagged actions")
@@ -32,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="deny",
         help="Action when approval webhook times out or fails",
     )
+    parser.add_argument("--watch-policy", action="store_true", help="Watch policy file for changes and reload")
     parser.add_argument("--advisory", action="store_true", help="Advisory mode: log violations but never block")
     return parser
 
@@ -102,6 +104,21 @@ def main(argv: list[str] | None = None) -> int:
 
     with open(args.policy, "r", encoding="utf-8") as handle:
         policy = yaml.safe_load(handle) or {}
+
+    if args.validate:
+        from intent_guard.sdk.validator import validate_policy
+
+        errors = validate_policy(policy)
+        if errors:
+            for err in errors:
+                sys.stderr.write(f"ERROR: {err}\n")
+            return 1
+        sys.stdout.write("Policy is valid.\n")
+        return 0
+
+    if not args.target:
+        parser.error("--target is required when not using --validate")
+
     provider = _build_provider(args, policy.get("semantic_rules", {}))
     policy_engine = IntentGuardEngine(policy=policy, provider=provider)
     task_context = args.task or os.environ.get("INTENT_GUARD_TASK")
@@ -122,6 +139,15 @@ def main(argv: list[str] | None = None) -> int:
         approval_callback=approval_callback,
         advisory_mode=args.advisory,
     )
+    if args.watch_policy:
+        from intent_guard.sdk.watcher import PolicyWatcher
+
+        watcher = PolicyWatcher(
+            policy_path=args.policy,
+            on_reload=policy_engine.reload_policy,
+        )
+        watcher.start()
+
     return proxy.run_stdio()
 
 
