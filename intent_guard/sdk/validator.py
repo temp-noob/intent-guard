@@ -121,6 +121,11 @@ def _validate_semantic_rules(rules: Any) -> list[str]:
         if not isinstance(cit, (int, float)) or isinstance(cit, bool) or not (0 <= cit <= 1):
             errors.append("\'semantic_rules.critical_intent_threshold\' must be a float between 0 and 1")
 
+    if "prompt_version" in rules:
+        pv = rules["prompt_version"]
+        if not isinstance(pv, str) or not pv.strip():
+            errors.append("\'semantic_rules.prompt_version\' must be a non-empty string")
+
     if "constraints" in rules:
         c = rules["constraints"]
         if not isinstance(c, list):

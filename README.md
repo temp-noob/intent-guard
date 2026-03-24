@@ -78,6 +78,7 @@ custom_policies:
 semantic_rules:
   provider: ollama # or litellm
   mode: enforce # off | enforce | advisory
+  prompt_version: "v1"
   guardrail_model: llama-guard-3-8b
   critical_intent_threshold: 0.85
   retry_attempts: 2
@@ -140,6 +141,8 @@ Behavior matrix for tool criticality tiers (example mapping):
 
 Define tiers by assigning tools in `provider_fail_mode.by_tool`.
 
+`semantic_rules.prompt_version` is copied into every semantic decision and log entry as `semantic_prompt_version` so prompt changes are auditable.
+
 ### LiteLLM provider
 
 To use the API provider, set in `.env` (or process env):
@@ -185,10 +188,21 @@ print(decision.allowed, decision.reason)
 - `rule_id`
 - `timestamp` (UTC ISO-8601)
 - `override` (`who`/`why`/`ttl`, when manually approved)
+- `semantic_prompt_version` (when semantic checks are applied)
 
 Backward compatibility:
 - Existing fields `allowed`, `reason`, `requires_approval`, `semantic_score` are unchanged.
 - New fields are always present with safe defaults, so existing consumers can ignore them.
+
+## Semantic eval harness
+
+IntentGuard ships a lightweight semantic eval harness used in tests to measure model behavior on known-safe and known-unsafe tool calls.
+
+- Dataset fixtures: `tests/fixtures/semantic_eval_dataset.json`
+- Replay verdicts: `tests/fixtures/semantic_eval_verdicts.json`
+- Metrics computed: precision, recall, accuracy
+
+This enables reproducible regression checks for semantic policy quality.
 
 Versioning/migration strategy:
 - Keep parsing logic tolerant of unknown fields.

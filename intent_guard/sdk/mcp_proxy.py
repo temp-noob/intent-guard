@@ -52,6 +52,7 @@ def webhook_approval_callback(
                 "policy_version": decision.policy_version,
                 "rule_id": decision.rule_id,
                 "timestamp": decision.timestamp,
+                "semantic_prompt_version": decision.semantic_prompt_version,
             },
             "request": {
                 "id": request.get("id"),
@@ -145,6 +146,7 @@ class MCPProxy:
                     "policy_version": decision.policy_version,
                     "rule_id": decision.rule_id,
                     "timestamp": decision.timestamp,
+                    "semantic_prompt_version": decision.semantic_prompt_version,
                 },
             },
         }
@@ -164,6 +166,7 @@ class MCPProxy:
             "rule_id": decision.rule_id,
             "timestamp": decision.timestamp,
             "override": decision.override,
+            "semantic_prompt_version": decision.semantic_prompt_version,
             "would_block": not decision.allowed,
         }
         if self.logger is not None:

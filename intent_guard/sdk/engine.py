@@ -29,6 +29,7 @@ class GuardDecision:
     rule_id: str = "policy.default"
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
     override: dict[str, Any] | None = None
+    semantic_prompt_version: str | None = None
 
 
 class IntentGuardEngine:
@@ -54,13 +55,19 @@ class IntentGuardEngine:
                 sys.stderr.write(f"Policy warning: {err}\\n")
         return cls(policy=policy, provider=provider)
 
-    def evaluate_tool_call(self, tool_name: str, arguments: dict[str, Any] | None, task_context: str | None = None) -> GuardDecision:
+    def evaluate_tool_call(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+        task_context: str | None = None,
+        semantic_example_name: str | None = None,
+    ) -> GuardDecision:
         arguments = arguments or {}
         static_decision = self._run_static_checks(tool_name, arguments)
         if not static_decision.allowed:
             return static_decision
 
-        semantic_decision = self._run_semantic_checks(tool_name, arguments, task_context)
+        semantic_decision = self._run_semantic_checks(tool_name, arguments, task_context, semantic_example_name)
         if semantic_decision is not None:
             return semantic_decision
         return self._decision(
@@ -176,17 +183,6 @@ class IntentGuardEngine:
             rule_id="static.passed",
         )
 
-    def _extract_all_strings(self, value):
-        """Recursively extract all string values from nested dicts/lists."""
-        if isinstance(value, dict):
-            for nested in value.values():
-                yield from self._extract_all_strings(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                yield from self._extract_all_strings(nested)
-        elif isinstance(value, str):
-            yield value
-
     def _iter_custom_policies(self) -> Iterable[dict[str, Any]]:
         raw_custom_policies = self.policy.get("custom_policies", [])
         if isinstance(raw_custom_policies, dict):
@@ -200,6 +196,7 @@ class IntentGuardEngine:
         tool_name: str,
         arguments: dict[str, Any],
         task_context: str | None,
+        semantic_example_name: str | None = None,
     ) -> GuardDecision | None:
         semantic_rules = self.policy.get("semantic_rules", {})
         if not semantic_rules:
@@ -216,7 +213,15 @@ class IntentGuardEngine:
             )
 
         threshold = float(semantic_rules.get("critical_intent_threshold", 0.85))
-        prompt = self._build_semantic_prompt(tool_name, arguments, task_context, semantic_rules.get("constraints", []))
+        prompt_version = str(semantic_rules.get("prompt_version", "v1"))
+        prompt = self._build_semantic_prompt(
+            tool_name,
+            arguments,
+            task_context,
+            semantic_rules.get("constraints", []),
+            prompt_version,
+            semantic_example_name,
+        )
         try:
             verdict = self.provider.judge(prompt)
         except SemanticProviderUnavailable as exc:
@@ -234,24 +239,29 @@ class IntentGuardEngine:
                 code="ALLOW_SEMANTIC",
                 severity="info",
                 rule_id="semantic.threshold",
+                semantic_prompt_version=prompt_version,
             )
         if mode == "advisory":
+            advisory_reason = verdict.reason or f"semantic advisory alert (score={verdict.score:.2f})"
             return self._decision(
                 allowed=True,
-                reason=f"semantic advisory alert (score={verdict.score:.2f})",
+                reason=advisory_reason,
                 semantic_score=verdict.score,
                 code="ALLOW_SEMANTIC_ADVISORY",
                 severity="warning",
                 rule_id="semantic.advisory",
+                semantic_prompt_version=prompt_version,
             )
+        blocked_reason = verdict.reason or f"semantic check failed (score={verdict.score:.2f})"
         return self._decision(
             allowed=False,
-            reason=f"semantic check failed (score={verdict.score:.2f})",
+            reason=blocked_reason,
             requires_approval=True,
             semantic_score=verdict.score,
             code="BLOCK_SEMANTIC",
             severity="high",
             rule_id="semantic.threshold",
+            semantic_prompt_version=prompt_version,
         )
 
     def _semantic_provider_failure_decision(
@@ -378,12 +388,23 @@ class IntentGuardEngine:
         arguments: dict[str, Any],
         task_context: str | None,
         constraints: list[dict[str, Any]],
+        prompt_version: str,
+        semantic_example_name: str | None = None,
     ) -> str:
         constraint_text = json.dumps(constraints, indent=2, sort_keys=True)
         return (
+            "You are a policy guardrail evaluator.\n"
+            f"PromptVersion: {prompt_version}\n"
+            f"ExampleName: {semantic_example_name or 'none'}\n"
             f"Task: {task_context or 'No task context supplied'}\n"
-            f"Tool Call: {tool_name}({json.dumps(arguments, sort_keys=True)})\n"
-            f"Policy Constraints:\n{constraint_text}\n\n"
-            "Decide whether this action is SAFE or UNSAFE under the policy. "
-            "Respond with SAFE or UNSAFE and include a score from 0.0 to 1.0."
+            f"ToolName: {tool_name}\n"
+            f"Arguments: {json.dumps(arguments, sort_keys=True)}\n"
+            f"PolicyConstraints: {constraint_text}\n\n"
+            "Return a strict JSON object only with keys:\n"
+            '  {"safe": <boolean>, "score": <number 0.0..1.0>, "reason": <string>}\n'
+            "Rules:\n"
+            "- safe=true only when call is policy-aligned with low risk.\n"
+            "- score is confidence that the call is safe under constraints.\n"
+            "- reason must be concise and specific.\n"
+            "- No markdown, no extra text."
         )

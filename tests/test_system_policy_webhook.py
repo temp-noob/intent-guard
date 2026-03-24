@@ -143,6 +143,7 @@ def test_system_semantic_policy_uses_provider_and_webhook_override(tmp_path: Pat
         """
 version: "1.0"
 semantic_rules:
+  prompt_version: "v2-eval"
   critical_intent_threshold: 0.85
   constraints:
     - intent: modify_source_code
@@ -151,7 +152,15 @@ semantic_rules:
 """,
         encoding="utf-8",
     )
-    provider = FakeProvider(verdict=SemanticVerdict(safe=False, score=0.25, raw="UNSAFE"), prompts=[])
+    provider = FakeProvider(
+        verdict=SemanticVerdict(
+            safe=False,
+            score=0.25,
+            raw='{"safe": false, "score": 0.25, "reason": "auth path write"}',
+            reason="auth path write",
+        ),
+        prompts=[],
+    )
     engine = IntentGuardEngine.from_policy_file(policy_path, provider=provider)
 
     with toy_webhook_server(
@@ -172,6 +181,9 @@ semantic_rules:
     assert error is None
     assert len(provider.prompts) == 1
     assert "Task: UI updates only" in provider.prompts[0]
+    assert "PromptVersion: v2-eval" in provider.prompts[0]
     assert len(received) == 1
     assert received[0]["decision"]["code"] == "BLOCK_SEMANTIC"
+    assert received[0]["decision"]["semantic_prompt_version"] == "v2-eval"
+    assert received[0]["decision"]["reason"] == "auth path write"
     assert received[0]["request"]["params"]["name"] == "edit_file"

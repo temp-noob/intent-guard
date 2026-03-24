@@ -89,6 +89,7 @@ def test_valid_complex_policy():
         "semantic_rules": {
             "provider": "ollama",
             "mode": "enforce",
+            "prompt_version": "v1",
             "critical_intent_threshold": 0.85,
             "constraints": [
                 {"intent": "modify_source_code", "allowed_scope": "UI only"},
@@ -96,3 +97,9 @@ def test_valid_complex_policy():
         },
     }
     assert validate_policy(policy) == []
+
+
+def test_invalid_prompt_version():
+    policy = {"semantic_rules": {"prompt_version": ""}}
+    errors = validate_policy(policy)
+    assert any("prompt_version" in e for e in errors)

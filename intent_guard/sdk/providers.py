@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import random
-import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import requests
 
@@ -21,6 +21,7 @@ class SemanticVerdict:
     safe: bool
     score: float
     raw: str
+    reason: str = ""
 
 
 class GuardrailProvider(Protocol):
@@ -32,19 +33,52 @@ class SemanticProviderUnavailable(RuntimeError):
     pass
 
 
-def _parse_verdict(raw_text: str) -> SemanticVerdict:
-    upper = raw_text.upper()
-    safe = "UNSAFE" not in upper and "SAFE" in upper
-    score = _extract_score(raw_text, default=1.0 if safe else 0.0)
-    return SemanticVerdict(safe=safe, score=score, raw=raw_text)
+def _parse_json_object(raw_text: str) -> dict[str, Any]:
+    text = raw_text.strip()
+    if not text:
+        raise ValueError("empty response")
+
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("response does not contain a json object")
+
+    payload = json.loads(text[start : end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("json payload must be an object")
+    return payload
 
 
-def _extract_score(text: str, default: float) -> float:
-    match = re.search(r"([01](?:\.\d+)?)", text)
-    if not match:
-        return default
-    value = float(match.group(1))
-    return max(0.0, min(1.0, value))
+def _parse_structured_verdict(raw_text: str) -> SemanticVerdict:
+    payload = _parse_json_object(raw_text)
+    safe = payload.get("safe")
+    score = payload.get("score")
+    reason = payload.get("reason", "")
+
+    if not isinstance(safe, bool):
+        raise ValueError("field 'safe' must be boolean")
+    if not isinstance(score, (int, float)) or isinstance(score, bool):
+        raise ValueError("field 'score' must be numeric")
+    if not isinstance(reason, str):
+        reason = str(reason)
+
+    return SemanticVerdict(
+        safe=safe,
+        score=max(0.0, min(1.0, float(score))),
+        raw=raw_text,
+        reason=reason.strip(),
+    )
+
+
+def parse_structured_verdict(raw_text: str) -> SemanticVerdict:
+    return _parse_structured_verdict(raw_text)
 
 
 class _ResilientProvider:
@@ -126,15 +160,25 @@ class OllamaProvider:
             try:
                 response = requests.post(
                     f"{self.host}/api/generate",
-                    json={"model": self.model, "prompt": prompt, "stream": False},
+                    json={
+                        "model": self.model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "format": "json",
+                    },
                     timeout=self.timeout,
                 )
                 response.raise_for_status()
                 data = response.json()
                 raw_text = data.get("response", "")
+                if isinstance(raw_text, dict):
+                    raw_text = json.dumps(raw_text)
+                if not isinstance(raw_text, str):
+                    raw_text = str(raw_text)
+                verdict = _parse_structured_verdict(raw_text)
                 self._resilience._on_success()
-                return _parse_verdict(raw_text)
-            except (requests.RequestException, ValueError) as exc:
+                return verdict
+            except (requests.RequestException, ValueError, TypeError, json.JSONDecodeError) as exc:
                 last_error = exc
                 if attempt < self._resilience.retry_attempts:
                     self._resilience._sleep_with_jitter(attempt)
@@ -179,14 +223,16 @@ class LiteLLMProvider:
                 response = litellm_completion(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
                     temperature=0,
                     max_tokens=64,
                     timeout=self.timeout,
                 )
                 raw_text = self._extract_text(response)
+                verdict = _parse_structured_verdict(raw_text)
                 self._resilience._on_success()
-                return _parse_verdict(raw_text)
-            except (RuntimeError, ValueError, TypeError, requests.RequestException) as exc:
+                return verdict
+            except (RuntimeError, ValueError, TypeError, requests.RequestException, json.JSONDecodeError) as exc:
                 last_error = exc
                 if attempt < self._resilience.retry_attempts:
                     self._resilience._sleep_with_jitter(attempt)
@@ -197,17 +243,32 @@ class LiteLLMProvider:
 
     @staticmethod
     def _extract_text(response: object) -> str:
+        def _coerce_content(content: object) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts: list[str] = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if text is not None:
+                            parts.append(str(text))
+                    else:
+                        parts.append(str(item))
+                return "".join(parts)
+            return str(content)
+
         if isinstance(response, dict):
             choices = response.get("choices", [])
             if choices:
                 message = choices[0].get("message", {})
-                return str(message.get("content", ""))
+                return _coerce_content(message.get("content", ""))
             return ""
         choices = getattr(response, "choices", [])
         if choices:
             first_choice = choices[0]
             message = getattr(first_choice, "message", None)
             if isinstance(message, dict):
-                return str(message.get("content", ""))
-            return str(getattr(message, "content", ""))
+                return _coerce_content(message.get("content", ""))
+            return _coerce_content(getattr(message, "content", ""))
         return ""
