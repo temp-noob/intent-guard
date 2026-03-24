@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -137,6 +139,19 @@ class IntentGuardEngine:
                     rule_id=f"custom_policies.{index}.args.should_not_present",
                 )
 
+        injection_patterns = static_rules.get("injection_patterns", [])
+        if injection_patterns:
+            for s in self._extract_all_strings(arguments):
+                for pattern in injection_patterns:
+                    if re.search(pattern, s, re.IGNORECASE):
+                        return self._decision(
+                            allowed=False,
+                            reason=f"potential injection detected in argument: pattern '{pattern}' matched",
+                            code="BLOCK_INJECTION_DETECTED",
+                            severity="high",
+                            rule_id="static.injection_patterns",
+                        )
+
         return self._decision(
             allowed=True,
             reason="static checks passed",
@@ -144,6 +159,17 @@ class IntentGuardEngine:
             severity="info",
             rule_id="static.passed",
         )
+
+    def _extract_all_strings(self, value):
+        """Recursively extract all string values from nested dicts/lists."""
+        if isinstance(value, dict):
+            for nested in value.values():
+                yield from self._extract_all_strings(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from self._extract_all_strings(nested)
+        elif isinstance(value, str):
+            yield value
 
     def _iter_custom_policies(self) -> Iterable[dict[str, Any]]:
         raw_custom_policies = self.policy.get("custom_policies", [])
@@ -311,8 +337,8 @@ class IntentGuardEngine:
 
     @staticmethod
     def _matches_path(path: str, pattern: str) -> bool:
-        normalized_path = path.lstrip("./")
-        normalized_pattern = pattern.lstrip("./")
+        normalized_path = os.path.normpath(path)
+        normalized_pattern = os.path.normpath(pattern)
         return (
             fnmatch(path, pattern)
             or fnmatch(normalized_path, normalized_pattern)
