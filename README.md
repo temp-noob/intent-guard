@@ -176,6 +176,24 @@ Behavior:
 - `warn`: forward response and log warning decision
 - `redact`: redact matched text and forward sanitized response
 
+## Tool description change detection (rug-pull protection)
+
+IntentGuard can snapshot MCP `tools/list` metadata and detect changes over time.
+
+Configure:
+
+```yaml
+tool_change_rules:
+  enabled: true
+  action: warn # warn | block
+```
+
+Behavior:
+- On first `tools/list`, stores snapshot in `.intent-guard/tool-snapshots/<server-hash>.json`
+- On subsequent `tools/list`, compares `name`, `description`, and `inputSchema`
+- `warn`: log warning and continue
+- `block`: block response when drift is detected
+
 ### Semantic mode and provider failure behavior
 
 `semantic_rules.mode` controls normal semantic enforcement:

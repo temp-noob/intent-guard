@@ -121,3 +121,16 @@ def test_valid_response_rules():
     }
     errors = validate_policy(policy)
     assert errors == []
+
+
+def test_invalid_tool_change_rules():
+    policy = {"tool_change_rules": {"enabled": "yes", "action": "quarantine"}}
+    errors = validate_policy(policy)
+    assert any("tool_change_rules.enabled" in e for e in errors)
+    assert any("tool_change_rules.action" in e for e in errors)
+
+
+def test_valid_tool_change_rules():
+    policy = {"tool_change_rules": {"enabled": True, "action": "warn"}}
+    errors = validate_policy(policy)
+    assert errors == []
