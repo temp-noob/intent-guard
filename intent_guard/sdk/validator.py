@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-KNOWN_TOP_LEVEL_KEYS = {"version", "name", "static_rules", "custom_policies", "semantic_rules"}
+KNOWN_TOP_LEVEL_KEYS = {"version", "name", "static_rules", "custom_policies", "semantic_rules", "response_rules"}
 VALID_PROVIDERS = {"ollama", "litellm"}
 VALID_MODES = {"off", "enforce", "advisory"}
 
@@ -32,6 +32,9 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
 
     if "semantic_rules" in policy:
         errors.extend(_validate_semantic_rules(policy["semantic_rules"]))
+
+    if "response_rules" in policy:
+        errors.extend(_validate_response_rules(policy["response_rules"]))
 
     return errors
 
@@ -134,5 +137,35 @@ def _validate_semantic_rules(rules: Any) -> list[str]:
             for i, item in enumerate(c):
                 if not isinstance(item, dict):
                     errors.append(f"\'semantic_rules.constraints[{i}]\' must be a dict")
+
+    return errors
+
+
+def _validate_response_rules(rules: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(rules, dict):
+        return ["'response_rules' must be a dict"]
+
+    if "action" in rules:
+        action = rules["action"]
+        if action not in {"block", "warn", "redact"}:
+            errors.append("'response_rules.action' must be one of ['block', 'warn', 'redact']")
+
+    if "detect_base64" in rules and not isinstance(rules["detect_base64"], bool):
+        errors.append("'response_rules.detect_base64' must be boolean")
+
+    if "patterns" in rules:
+        patterns = rules["patterns"]
+        if not isinstance(patterns, list):
+            errors.append("'response_rules.patterns' must be a list")
+        else:
+            for i, item in enumerate(patterns):
+                if not isinstance(item, dict):
+                    errors.append(f"'response_rules.patterns[{i}]' must be a dict")
+                    continue
+                if "name" not in item or not isinstance(item["name"], str) or not item["name"].strip():
+                    errors.append(f"'response_rules.patterns[{i}].name' must be a non-empty string")
+                if "pattern" not in item or not isinstance(item["pattern"], str) or not item["pattern"].strip():
+                    errors.append(f"'response_rules.patterns[{i}].pattern' must be a non-empty string")
 
     return errors

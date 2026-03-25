@@ -15,6 +15,7 @@ from typing import Any, Callable
 import requests
 
 from intent_guard.sdk.engine import GuardDecision, IntentGuardEngine
+from intent_guard.sdk.response_guard import ResponseGuard
 
 ApprovalCallback = Callable[[GuardDecision, dict[str, Any]], bool | dict[str, Any]]
 LogCallback = Callable[[dict[str, Any]], None]
@@ -103,6 +104,7 @@ class MCPProxy:
         self.task_context = task_context
         self.logger = logger
         self.advisory_mode = advisory_mode
+        self.response_guard = ResponseGuard(self.engine.policy.get("response_rules", {}))
 
     def process_client_message(self, message: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         if message.get("method") != "tools/call":
@@ -152,6 +154,16 @@ class MCPProxy:
         }
         return False, error
 
+    def process_server_message(self, message: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+        decision = self.response_guard.inspect(message)
+        self._log_response_decision(decision)
+
+        if decision.allow and decision.redacted_response is not None:
+            return True, decision.redacted_response
+        if decision.allow:
+            return True, None
+        return False, self._response_block_error(message, decision.reason)
+
     def _log_tool_call(self, tool_name: str, arguments: dict[str, Any], decision: GuardDecision) -> None:
         entry = {
             "tool": tool_name,
@@ -175,6 +187,32 @@ class MCPProxy:
             sys.stderr.write(json.dumps(entry) + "\n")
             sys.stderr.flush()
 
+    def _log_response_decision(self, decision: Any) -> None:
+        entry = {
+            "event": "response_inspection",
+            "allowed": decision.allow,
+            "reason": decision.reason,
+            "decision_code": decision.code,
+            "severity": decision.severity,
+        }
+        if self.logger is not None:
+            self.logger(entry)
+        else:
+            sys.stderr.write(json.dumps(entry) + "\n")
+            sys.stderr.flush()
+
+    @staticmethod
+    def _response_block_error(message: dict[str, Any], reason: str) -> dict[str, Any]:
+        return {
+            "jsonrpc": message.get("jsonrpc", "2.0"),
+            "id": message.get("id"),
+            "error": {
+                "code": -32002,
+                "message": f"IntentGuard blocked MCP response: {reason}",
+                "data": {"decision_code": "BLOCK_RESPONSE", "severity": "high"},
+            },
+        }
+
     def run_stdio(self) -> int:
         child = subprocess.Popen(
             self.target_command,
@@ -185,12 +223,39 @@ class MCPProxy:
             bufsize=1,
         )
 
+        def forward_stdout_stream(source: Any, target: Any) -> None:
+            for line in source:
+                stripped = line.strip()
+                if not stripped:
+                    target.write(line)
+                    target.flush()
+                    continue
+                try:
+                    message = json.loads(stripped)
+                except json.JSONDecodeError:
+                    target.write(line)
+                    target.flush()
+                    continue
+
+                should_forward, transformed = self.process_server_message(message)
+                if not should_forward:
+                    if transformed is not None:
+                        target.write(json.dumps(transformed) + "\n")
+                        target.flush()
+                    continue
+                if transformed is not None:
+                    target.write(json.dumps(transformed) + "\n")
+                    target.flush()
+                    continue
+                target.write(line)
+                target.flush()
+
         def forward_stream(source: Any, target: Any) -> None:
             for line in source:
                 target.write(line)
                 target.flush()
 
-        stdout_thread = threading.Thread(target=forward_stream, args=(child.stdout, sys.stdout), daemon=True)
+        stdout_thread = threading.Thread(target=forward_stdout_stream, args=(child.stdout, sys.stdout), daemon=True)
         stderr_thread = threading.Thread(target=forward_stream, args=(child.stderr, sys.stderr), daemon=True)
         stdout_thread.start()
         stderr_thread.start()

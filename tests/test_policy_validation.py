@@ -103,3 +103,21 @@ def test_invalid_prompt_version():
     policy = {"semantic_rules": {"prompt_version": ""}}
     errors = validate_policy(policy)
     assert any("prompt_version" in e for e in errors)
+
+
+def test_invalid_response_rules_action():
+    policy = {"response_rules": {"action": "quarantine"}}
+    errors = validate_policy(policy)
+    assert any("response_rules.action" in e for e in errors)
+
+
+def test_valid_response_rules():
+    policy = {
+        "response_rules": {
+            "action": "redact",
+            "detect_base64": True,
+            "patterns": [{"name": "token", "pattern": r"ghp_[A-Za-z0-9_]+"}],
+        }
+    }
+    errors = validate_policy(policy)
+    assert errors == []

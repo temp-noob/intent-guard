@@ -156,6 +156,26 @@ cat | intent-guard evaluate --policy schema/policy.yaml
 
 This lets platform-native hooks call IntentGuard directly instead of wrapping only MCP servers.
 
+## Response-side inspection
+
+IntentGuard can inspect MCP server responses before forwarding them to the client.
+
+Configure `response_rules` in policy:
+
+```yaml
+response_rules:
+  action: block # block | warn | redact
+  detect_base64: true
+  patterns:
+    - name: "GitHub Token"
+      pattern: "gh[ps]_[A-Za-z0-9_]{36,}"
+```
+
+Behavior:
+- `block`: return JSON-RPC error and suppress original response
+- `warn`: forward response and log warning decision
+- `redact`: redact matched text and forward sanitized response
+
 ### Semantic mode and provider failure behavior
 
 `semantic_rules.mode` controls normal semantic enforcement:
