@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import yaml
 
+from intent_guard.sdk.decision_cache import SemanticDecisionCache
 from intent_guard.sdk.providers import GuardrailProvider, SemanticProviderUnavailable
 
 
@@ -39,10 +40,22 @@ class IntentGuardEngine:
     def __init__(self, policy: dict[str, Any], provider: GuardrailProvider | None = None):
         self.policy = policy or {}
         self.provider = provider
+        self.semantic_cache = self._build_semantic_cache()
 
     def reload_policy(self, policy: dict[str, Any]) -> None:
         """Hot-swap the policy dict. In-flight evaluations may use old policy."""
         self.policy = policy
+        self.semantic_cache = self._build_semantic_cache()
+
+    def _build_semantic_cache(self) -> SemanticDecisionCache:
+        semantic_rules = self.policy.get("semantic_rules", {})
+        cache_config = semantic_rules.get("decision_cache", {})
+        enabled = bool(cache_config.get("enabled", False))
+        if not enabled:
+            return SemanticDecisionCache(max_size=1, ttl_seconds=1)
+        max_size = int(cache_config.get("max_size", 256))
+        ttl_seconds = int(cache_config.get("ttl_seconds", 300))
+        return SemanticDecisionCache(max_size=max_size, ttl_seconds=ttl_seconds)
 
     @classmethod
     def from_policy_file(cls, policy_path: str | Path, provider: GuardrailProvider | None = None) -> "IntentGuardEngine":
@@ -248,14 +261,32 @@ class IntentGuardEngine:
             prompt_version,
             semantic_example_name,
         )
-        try:
-            verdict = self.provider.judge(prompt)
-        except SemanticProviderUnavailable as exc:
-            return self._semantic_provider_failure_decision(
-                tool_name=tool_name,
-                semantic_rules=semantic_rules,
-                reason=str(exc) or "semantic provider failed",
-            )
+        cache_config = semantic_rules.get("decision_cache", {})
+        cache_enabled = bool(cache_config.get("enabled", False))
+        cache_key = self.semantic_cache.make_key(tool_name, arguments, task_context)
+        if cache_enabled:
+            cached = self.semantic_cache.get(cache_key)
+            if cached is not None:
+                verdict = cached
+            else:
+                try:
+                    verdict = self.provider.judge(prompt)
+                except SemanticProviderUnavailable as exc:
+                    return self._semantic_provider_failure_decision(
+                        tool_name=tool_name,
+                        semantic_rules=semantic_rules,
+                        reason=str(exc) or "semantic provider failed",
+                    )
+                self.semantic_cache.set(cache_key, verdict)
+        else:
+            try:
+                verdict = self.provider.judge(prompt)
+            except SemanticProviderUnavailable as exc:
+                return self._semantic_provider_failure_decision(
+                    tool_name=tool_name,
+                    semantic_rules=semantic_rules,
+                    reason=str(exc) or "semantic provider failed",
+                )
 
         if verdict.safe and verdict.score >= threshold:
             return self._decision(
