@@ -10,6 +10,7 @@ static_rules:
     - .env
     - src/auth/*
   max_tokens_per_call: 4000
+  decode_arguments: true
   injection_patterns:
     - "ignore previous instructions"
     - "ignore all prior"

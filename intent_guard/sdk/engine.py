@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
-import re
 import os
+import re
+import urllib.parse
+import unicodedata
+from base64 import b64decode
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -80,6 +83,8 @@ class IntentGuardEngine:
 
     def _run_static_checks(self, tool_name: str, arguments: dict[str, Any]) -> GuardDecision:
         static_rules = self.policy.get("static_rules", {})
+        decode_arguments = bool(static_rules.get("decode_arguments", True))
+        argument_variants = self._extract_argument_variants(arguments, decode=decode_arguments)
         forbidden_tools = set(static_rules.get("forbidden_tools", []))
         if tool_name in forbidden_tools:
             return self._decision(
@@ -105,7 +110,7 @@ class IntentGuardEngine:
 
         protected_paths = static_rules.get("protected_paths", [])
         if protected_paths:
-            for path in self._extract_path_candidates(arguments):
+            for path in self._extract_path_candidates(arguments, decode=decode_arguments):
                 for pattern in protected_paths:
                     if self._matches_path(path, pattern):
                         return self._decision(
@@ -148,24 +153,24 @@ class IntentGuardEngine:
 
         injection_patterns = static_rules.get("injection_patterns", [])
         if injection_patterns:
-            for s in self._extract_all_strings(arguments):
-                for pattern in injection_patterns:
-                    if re.search(pattern, s, re.IGNORECASE):
-                        return self._decision(
-                            allowed=False,
-                            reason=f"potential injection detected in argument: pattern '{pattern}' matched",
-                            code="BLOCK_INJECTION_DETECTED",
-                            severity="high",
-                            rule_id="static.injection_patterns",
-                        )
+            decision = self._match_pattern_block(
+                argument_variants=argument_variants,
+                patterns=injection_patterns,
+                code="BLOCK_INJECTION_DETECTED",
+                rule_id="static.injection_patterns",
+                reason_template="potential injection detected in argument: pattern '{pattern}' matched",
+                severity="high",
+            )
+            if decision is not None:
+                return decision
 
         sensitive_patterns = static_rules.get("sensitive_data_patterns", [])
         if sensitive_patterns:
-            for string_val in self._extract_all_strings(arguments):
+            for variant in argument_variants:
                 for pat_config in sensitive_patterns:
                     pat_name = pat_config.get("name", "unknown")
                     pat_regex = pat_config.get("pattern", "")
-                    if pat_regex and re.search(pat_regex, string_val):
+                    if pat_regex and re.search(pat_regex, variant, re.IGNORECASE):
                         return self._decision(
                             allowed=False,
                             reason=f"sensitive data detected: {pat_name}",
@@ -182,6 +187,27 @@ class IntentGuardEngine:
             severity="info",
             rule_id="static.passed",
         )
+
+    def _match_pattern_block(
+        self,
+        argument_variants: list[str],
+        patterns: list[str],
+        code: str,
+        rule_id: str,
+        reason_template: str,
+        severity: str,
+    ) -> GuardDecision | None:
+        for value in argument_variants:
+            for pattern in patterns:
+                if re.search(pattern, value, re.IGNORECASE):
+                    return self._decision(
+                        allowed=False,
+                        reason=reason_template.format(pattern=pattern),
+                        code=code,
+                        severity=severity,
+                        rule_id=rule_id,
+                    )
+        return None
 
     def _iter_custom_policies(self) -> Iterable[dict[str, Any]]:
         raw_custom_policies = self.policy.get("custom_policies", [])
@@ -354,15 +380,59 @@ class IntentGuardEngine:
         elif isinstance(value, str):
             yield value
 
-    def _extract_path_candidates(self, value: Any, parent_key: str = "") -> Iterable[str]:
+    def _extract_argument_variants(self, arguments: dict[str, Any], decode: bool) -> list[str]:
+        variants: list[str] = []
+        for value in self._extract_all_strings(arguments):
+            variants.append(value)
+            if decode:
+                variants.extend(self._decode_variants(value))
+        return variants
+
+    @staticmethod
+    def _decode_variants(value: str) -> list[str]:
+        decoded: list[str] = []
+
+        url_decoded = urllib.parse.unquote(value)
+        if url_decoded != value:
+            decoded.append(url_decoded)
+
+        unicode_normalized = unicodedata.normalize("NFKC", value)
+        if unicode_normalized != value:
+            decoded.append(unicode_normalized)
+
+        b64 = IntentGuardEngine._try_base64_decode(value)
+        if b64 is not None and b64 != value:
+            decoded.append(b64)
+        return decoded
+
+    @staticmethod
+    def _try_base64_decode(value: str) -> str | None:
+        candidate = value.strip()
+        if len(candidate) < 12:
+            return None
+        candidate = candidate.replace("-", "+").replace("_", "/")
+        if len(candidate) % 4:
+            candidate += "=" * (4 - (len(candidate) % 4))
+        try:
+            decoded = b64decode(candidate, validate=True)
+            text = decoded.decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+        return text if text else None
+
+    def _extract_path_candidates(self, value: Any, parent_key: str = "", decode: bool = False) -> Iterable[str]:
         if isinstance(value, dict):
             for key, nested in value.items():
-                yield from self._extract_path_candidates(nested, parent_key=key)
+                yield from self._extract_path_candidates(nested, parent_key=key, decode=decode)
         elif isinstance(value, list):
             for nested in value:
-                yield from self._extract_path_candidates(nested, parent_key=parent_key)
+                yield from self._extract_path_candidates(nested, parent_key=parent_key, decode=decode)
         elif isinstance(value, str) and self._looks_like_path(value, parent_key):
             yield value
+            if decode:
+                for decoded_value in self._decode_variants(value):
+                    if self._looks_like_path(decoded_value, parent_key):
+                        yield decoded_value
 
     @staticmethod
     def _looks_like_path(value: str, parent_key: str) -> bool:

@@ -134,3 +134,9 @@ def test_valid_tool_change_rules():
     policy = {"tool_change_rules": {"enabled": True, "action": "warn"}}
     errors = validate_policy(policy)
     assert errors == []
+
+
+def test_invalid_decode_arguments_type():
+    policy = {"static_rules": {"decode_arguments": "yes"}}
+    errors = validate_policy(policy)
+    assert any("decode_arguments" in e for e in errors)

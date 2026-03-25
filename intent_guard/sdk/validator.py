@@ -85,6 +85,9 @@ def _validate_static_rules(rules: Any) -> list[str]:
                         f"\'static_rules.sensitive_data_patterns[{i}]\' must be a dict with \'name\' and \'pattern\'"
                     )
 
+    if "decode_arguments" in rules and not isinstance(rules["decode_arguments"], bool):
+        errors.append("'static_rules.decode_arguments' must be boolean")
+
     return errors
 
 

@@ -156,6 +156,22 @@ cat | intent-guard evaluate --policy schema/policy.yaml
 
 This lets platform-native hooks call IntentGuard directly instead of wrapping only MCP servers.
 
+## Encoded payload detection
+
+Static checks can decode and normalize argument payloads before matching:
+- URL decoding
+- Unicode normalization (NFKC)
+- Base64 decoding (when valid)
+
+Enable or disable via:
+
+```yaml
+static_rules:
+  decode_arguments: true
+```
+
+When enabled, injection, sensitive-data, and protected-path checks run against decoded variants to catch obfuscated bypasses.
+
 ## Response-side inspection
 
 IntentGuard can inspect MCP server responses before forwarding them to the client.
