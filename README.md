@@ -233,6 +233,20 @@ Define tiers by assigning tools in `provider_fail_mode.by_tool`.
 
 `semantic_rules.prompt_version` is copied into every semantic decision and log entry as `semantic_prompt_version` so prompt changes are auditable.
 
+### Semantic decision caching
+
+To reduce repeated provider calls for identical semantic evaluations:
+
+```yaml
+semantic_rules:
+  decision_cache:
+    enabled: true
+    max_size: 256
+    ttl_seconds: 300
+```
+
+Cache key uses `(tool_name, arguments, task_context)`. Static checks always run; only semantic verdicts are cached.
+
 ### LiteLLM provider
 
 To use the API provider, set in `.env` (or process env):

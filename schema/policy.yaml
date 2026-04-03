@@ -49,6 +49,10 @@ semantic_rules:
     by_tool:
       delete_database: enforce
       purge_all: enforce
+  decision_cache:
+    enabled: true
+    max_size: 256
+    ttl_seconds: 300
   constraints:
     - intent: modify_source_code
       allowed_scope: Actions must only affect UI components or styles.

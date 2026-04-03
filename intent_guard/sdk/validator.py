@@ -151,6 +151,22 @@ def _validate_semantic_rules(rules: Any) -> list[str]:
                 if not isinstance(item, dict):
                     errors.append(f"\'semantic_rules.constraints[{i}]\' must be a dict")
 
+    if "decision_cache" in rules:
+        dc = rules["decision_cache"]
+        if not isinstance(dc, dict):
+            errors.append("'semantic_rules.decision_cache' must be a dict")
+        else:
+            if "enabled" in dc and not isinstance(dc["enabled"], bool):
+                errors.append("'semantic_rules.decision_cache.enabled' must be boolean")
+            if "max_size" in dc:
+                max_size = dc["max_size"]
+                if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size <= 0:
+                    errors.append("'semantic_rules.decision_cache.max_size' must be a positive integer")
+            if "ttl_seconds" in dc:
+                ttl = dc["ttl_seconds"]
+                if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
+                    errors.append("'semantic_rules.decision_cache.ttl_seconds' must be a positive integer")
+
     return errors
 
 
