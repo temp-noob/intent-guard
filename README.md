@@ -156,6 +156,22 @@ cat | intent-guard evaluate --policy schema/policy.yaml
 
 This lets platform-native hooks call IntentGuard directly instead of wrapping only MCP servers.
 
+## Encoded payload detection
+
+Static checks can decode and normalize argument payloads before matching:
+- URL decoding
+- Unicode normalization (NFKC)
+- Base64 decoding (when valid)
+
+Enable or disable via:
+
+```yaml
+static_rules:
+  decode_arguments: true
+```
+
+When enabled, injection, sensitive-data, and protected-path checks run against decoded variants to catch obfuscated bypasses.
+
 ## Response-side inspection
 
 IntentGuard can inspect MCP server responses before forwarding them to the client.
@@ -175,6 +191,24 @@ Behavior:
 - `block`: return JSON-RPC error and suppress original response
 - `warn`: forward response and log warning decision
 - `redact`: redact matched text and forward sanitized response
+
+## Tool description change detection (rug-pull protection)
+
+IntentGuard can snapshot MCP `tools/list` metadata and detect changes over time.
+
+Configure:
+
+```yaml
+tool_change_rules:
+  enabled: true
+  action: warn # warn | block
+```
+
+Behavior:
+- On first `tools/list`, stores snapshot in `.intent-guard/tool-snapshots/<server-hash>.json`
+- On subsequent `tools/list`, compares `name`, `description`, and `inputSchema`
+- `warn`: log warning and continue
+- `block`: block response when drift is detected
 
 ### Semantic mode and provider failure behavior
 
@@ -198,6 +232,20 @@ Behavior matrix for tool criticality tiers (example mapping):
 Define tiers by assigning tools in `provider_fail_mode.by_tool`.
 
 `semantic_rules.prompt_version` is copied into every semantic decision and log entry as `semantic_prompt_version` so prompt changes are auditable.
+
+### Semantic decision caching
+
+To reduce repeated provider calls for identical semantic evaluations:
+
+```yaml
+semantic_rules:
+  decision_cache:
+    enabled: true
+    max_size: 256
+    ttl_seconds: 300
+```
+
+Cache key uses `(tool_name, arguments, task_context)`. Static checks always run; only semantic verdicts are cached.
 
 ### LiteLLM provider
 

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-KNOWN_TOP_LEVEL_KEYS = {"version", "name", "static_rules", "custom_policies", "semantic_rules", "response_rules"}
+KNOWN_TOP_LEVEL_KEYS = {
+    "version",
+    "name",
+    "static_rules",
+    "custom_policies",
+    "semantic_rules",
+    "response_rules",
+    "tool_change_rules",
+}
 VALID_PROVIDERS = {"ollama", "litellm"}
 VALID_MODES = {"off", "enforce", "advisory"}
 
@@ -35,6 +43,8 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
 
     if "response_rules" in policy:
         errors.extend(_validate_response_rules(policy["response_rules"]))
+    if "tool_change_rules" in policy:
+        errors.extend(_validate_tool_change_rules(policy["tool_change_rules"]))
 
     return errors
 
@@ -74,6 +84,9 @@ def _validate_static_rules(rules: Any) -> list[str]:
                     errors.append(
                         f"\'static_rules.sensitive_data_patterns[{i}]\' must be a dict with \'name\' and \'pattern\'"
                     )
+
+    if "decode_arguments" in rules and not isinstance(rules["decode_arguments"], bool):
+        errors.append("'static_rules.decode_arguments' must be boolean")
 
     return errors
 
@@ -138,6 +151,22 @@ def _validate_semantic_rules(rules: Any) -> list[str]:
                 if not isinstance(item, dict):
                     errors.append(f"\'semantic_rules.constraints[{i}]\' must be a dict")
 
+    if "decision_cache" in rules:
+        dc = rules["decision_cache"]
+        if not isinstance(dc, dict):
+            errors.append("'semantic_rules.decision_cache' must be a dict")
+        else:
+            if "enabled" in dc and not isinstance(dc["enabled"], bool):
+                errors.append("'semantic_rules.decision_cache.enabled' must be boolean")
+            if "max_size" in dc:
+                max_size = dc["max_size"]
+                if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size <= 0:
+                    errors.append("'semantic_rules.decision_cache.max_size' must be a positive integer")
+            if "ttl_seconds" in dc:
+                ttl = dc["ttl_seconds"]
+                if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
+                    errors.append("'semantic_rules.decision_cache.ttl_seconds' must be a positive integer")
+
     return errors
 
 
@@ -168,4 +197,16 @@ def _validate_response_rules(rules: Any) -> list[str]:
                 if "pattern" not in item or not isinstance(item["pattern"], str) or not item["pattern"].strip():
                     errors.append(f"'response_rules.patterns[{i}].pattern' must be a non-empty string")
 
+    return errors
+
+
+def _validate_tool_change_rules(rules: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(rules, dict):
+        return ["'tool_change_rules' must be a dict"]
+
+    if "enabled" in rules and not isinstance(rules["enabled"], bool):
+        errors.append("'tool_change_rules.enabled' must be boolean")
+    if "action" in rules and rules["action"] not in {"warn", "block"}:
+        errors.append("'tool_change_rules.action' must be one of ['warn', 'block']")
     return errors

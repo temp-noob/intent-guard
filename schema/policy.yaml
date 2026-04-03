@@ -10,6 +10,7 @@ static_rules:
     - .env
     - src/auth/*
   max_tokens_per_call: 4000
+  decode_arguments: true
   injection_patterns:
     - "ignore previous instructions"
     - "ignore all prior"
@@ -48,6 +49,10 @@ semantic_rules:
     by_tool:
       delete_database: enforce
       purge_all: enforce
+  decision_cache:
+    enabled: true
+    max_size: 256
+    ttl_seconds: 300
   constraints:
     - intent: modify_source_code
       allowed_scope: Actions must only affect UI components or styles.
@@ -67,3 +72,7 @@ response_rules:
       pattern: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
     - name: "SSN"
       pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+
+tool_change_rules:
+  enabled: true
+  action: warn

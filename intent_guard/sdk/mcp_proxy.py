@@ -16,6 +16,7 @@ import requests
 
 from intent_guard.sdk.engine import GuardDecision, IntentGuardEngine
 from intent_guard.sdk.response_guard import ResponseGuard
+from intent_guard.sdk.tool_snapshot import ToolSnapshotStore
 
 ApprovalCallback = Callable[[GuardDecision, dict[str, Any]], bool | dict[str, Any]]
 LogCallback = Callable[[dict[str, Any]], None]
@@ -105,6 +106,12 @@ class MCPProxy:
         self.logger = logger
         self.advisory_mode = advisory_mode
         self.response_guard = ResponseGuard(self.engine.policy.get("response_rules", {}))
+        self.detect_tool_changes = bool(self.engine.policy.get("tool_change_rules", {}).get("enabled", False))
+        self.tool_change_action = str(self.engine.policy.get("tool_change_rules", {}).get("action", "warn")).lower()
+        if self.tool_change_action not in {"warn", "block"}:
+            self.tool_change_action = "warn"
+        self.server_id = " ".join(self.target_command) if self.target_command else "default-server"
+        self.tool_snapshot_store = ToolSnapshotStore()
 
     def process_client_message(self, message: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         if message.get("method") != "tools/call":
@@ -155,14 +162,32 @@ class MCPProxy:
         return False, error
 
     def process_server_message(self, message: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+        if self._is_tools_list_response(message) and self.detect_tool_changes:
+            is_ok, reason = self.tool_snapshot_store.check_or_store(server_id=self.server_id, tools_payload=message)
+            severity = "info" if is_ok else "high"
+            code = "TOOL_SNAPSHOT_OK" if is_ok else "TOOL_SNAPSHOT_CHANGED"
+            self._log_response_event(allow=True, reason=reason, code=code, severity=severity)
+            if not is_ok and self.tool_change_action == "block":
+                return False, self._response_block_error(message, reason)
+
         decision = self.response_guard.inspect(message)
-        self._log_response_decision(decision)
+        self._log_response_event(
+            allow=decision.allow,
+            reason=decision.reason,
+            code=decision.code,
+            severity=decision.severity,
+        )
 
         if decision.allow and decision.redacted_response is not None:
             return True, decision.redacted_response
         if decision.allow:
             return True, None
         return False, self._response_block_error(message, decision.reason)
+
+    @staticmethod
+    def _is_tools_list_response(message: dict[str, Any]) -> bool:
+        result = message.get("result")
+        return isinstance(result, dict) and isinstance(result.get("tools"), list)
 
     def _log_tool_call(self, tool_name: str, arguments: dict[str, Any], decision: GuardDecision) -> None:
         entry = {
@@ -187,13 +212,13 @@ class MCPProxy:
             sys.stderr.write(json.dumps(entry) + "\n")
             sys.stderr.flush()
 
-    def _log_response_decision(self, decision: Any) -> None:
+    def _log_response_event(self, allow: bool, reason: str, code: str, severity: str) -> None:
         entry = {
             "event": "response_inspection",
-            "allowed": decision.allow,
-            "reason": decision.reason,
-            "decision_code": decision.code,
-            "severity": decision.severity,
+            "allowed": allow,
+            "reason": reason,
+            "decision_code": code,
+            "severity": severity,
         }
         if self.logger is not None:
             self.logger(entry)
