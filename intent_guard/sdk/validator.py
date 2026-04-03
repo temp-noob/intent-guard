@@ -85,6 +85,9 @@ def _validate_static_rules(rules: Any) -> list[str]:
                         f"\'static_rules.sensitive_data_patterns[{i}]\' must be a dict with \'name\' and \'pattern\'"
                     )
 
+    if "decode_arguments" in rules and not isinstance(rules["decode_arguments"], bool):
+        errors.append("'static_rules.decode_arguments' must be boolean")
+
     return errors
 
 
@@ -147,6 +150,22 @@ def _validate_semantic_rules(rules: Any) -> list[str]:
             for i, item in enumerate(c):
                 if not isinstance(item, dict):
                     errors.append(f"\'semantic_rules.constraints[{i}]\' must be a dict")
+
+    if "decision_cache" in rules:
+        dc = rules["decision_cache"]
+        if not isinstance(dc, dict):
+            errors.append("'semantic_rules.decision_cache' must be a dict")
+        else:
+            if "enabled" in dc and not isinstance(dc["enabled"], bool):
+                errors.append("'semantic_rules.decision_cache.enabled' must be boolean")
+            if "max_size" in dc:
+                max_size = dc["max_size"]
+                if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size <= 0:
+                    errors.append("'semantic_rules.decision_cache.max_size' must be a positive integer")
+            if "ttl_seconds" in dc:
+                ttl = dc["ttl_seconds"]
+                if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
+                    errors.append("'semantic_rules.decision_cache.ttl_seconds' must be a positive integer")
 
     return errors
 
