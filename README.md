@@ -120,6 +120,96 @@ python -m intent_guard.proxy \
 - `--approval-timeout`: timeout (seconds) for webhook approvals
 - `--approval-default-action`: `allow` or `deny` when webhook approval times out/fails
 
+## Native hook integration
+
+IntentGuard can run as the policy engine behind native hooks in Claude Code, Copilot, and Cursor.
+
+### Evaluate command
+
+Use the unified command:
+
+```bash
+intent-guard evaluate --policy schema/policy.yaml
+```
+
+Input:
+- Reads a hook payload JSON object from stdin
+- Supports generic keys like `tool_name`, `arguments`, `task_context`
+- Also supports nested payloads (`params.name`, `params.arguments`) and common aliases (`tool_input`, `args`, `prompt`)
+
+Output:
+- Prints a `GuardDecision` JSON object to stdout
+- Exit code `0` for allow, `1` for block, `2` for invalid input
+
+### Hook config templates
+
+Template files are shipped under `hooks/`:
+- `hooks/claude-code/settings.json`
+- `hooks/copilot/hooks.json`
+- `hooks/cursor/hooks.json`
+
+Each template invokes:
+
+```bash
+cat | intent-guard evaluate --policy schema/policy.yaml
+```
+
+This lets platform-native hooks call IntentGuard directly instead of wrapping only MCP servers.
+
+## Encoded payload detection
+
+Static checks can decode and normalize argument payloads before matching:
+- URL decoding
+- Unicode normalization (NFKC)
+- Base64 decoding (when valid)
+
+Enable or disable via:
+
+```yaml
+static_rules:
+  decode_arguments: true
+```
+
+When enabled, injection, sensitive-data, and protected-path checks run against decoded variants to catch obfuscated bypasses.
+
+## Response-side inspection
+
+IntentGuard can inspect MCP server responses before forwarding them to the client.
+
+Configure `response_rules` in policy:
+
+```yaml
+response_rules:
+  action: block # block | warn | redact
+  detect_base64: true
+  patterns:
+    - name: "GitHub Token"
+      pattern: "gh[ps]_[A-Za-z0-9_]{36,}"
+```
+
+Behavior:
+- `block`: return JSON-RPC error and suppress original response
+- `warn`: forward response and log warning decision
+- `redact`: redact matched text and forward sanitized response
+
+## Tool description change detection (rug-pull protection)
+
+IntentGuard can snapshot MCP `tools/list` metadata and detect changes over time.
+
+Configure:
+
+```yaml
+tool_change_rules:
+  enabled: true
+  action: warn # warn | block
+```
+
+Behavior:
+- On first `tools/list`, stores snapshot in `.intent-guard/tool-snapshots/<server-hash>.json`
+- On subsequent `tools/list`, compares `name`, `description`, and `inputSchema`
+- `warn`: log warning and continue
+- `block`: block response when drift is detected
+
 ### Semantic mode and provider failure behavior
 
 `semantic_rules.mode` controls normal semantic enforcement:
@@ -142,6 +232,20 @@ Behavior matrix for tool criticality tiers (example mapping):
 Define tiers by assigning tools in `provider_fail_mode.by_tool`.
 
 `semantic_rules.prompt_version` is copied into every semantic decision and log entry as `semantic_prompt_version` so prompt changes are auditable.
+
+### Semantic decision caching
+
+To reduce repeated provider calls for identical semantic evaluations:
+
+```yaml
+semantic_rules:
+  decision_cache:
+    enabled: true
+    max_size: 256
+    ttl_seconds: 300
+```
+
+Cache key uses `(tool_name, arguments, task_context)`. Static checks always run; only semantic verdicts are cached.
 
 ### LiteLLM provider
 
