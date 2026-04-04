@@ -134,6 +134,8 @@ class OllamaProvider:
         model: str,
         host: str = "http://localhost:11434",
         timeout: float = 5.0,
+        raw: bool = False,
+        options: dict[str, Any] | None = None,
         retry_attempts: int = 2,
         retry_base_delay_seconds: float = 0.25,
         retry_max_delay_seconds: float = 2.0,
@@ -152,20 +154,27 @@ class OllamaProvider:
         self.model = model
         self.host = host.rstrip("/")
         self.timeout = timeout
+        self.raw = bool(raw)
+        self.options = dict(options or {})
 
     def judge(self, prompt: str) -> SemanticVerdict:
         self._resilience._before_request()
         last_error: Exception | None = None
         for attempt in range(self._resilience.retry_attempts + 1):
             try:
+                payload: dict[str, Any] = {
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": "json",
+                }
+                if self.raw:
+                    payload["raw"] = True
+                if self.options:
+                    payload["options"] = self.options
                 response = requests.post(
                     f"{self.host}/api/generate",
-                    json={
-                        "model": self.model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                    },
+                    json=payload,
                     timeout=self.timeout,
                 )
                 response.raise_for_status()

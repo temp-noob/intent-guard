@@ -69,6 +69,8 @@ def _build_provider(args: argparse.Namespace, semantic_rules: dict) -> OllamaPro
     circuit_breaker_failures = int(semantic_rules.get("circuit_breaker_failures", 3))
     circuit_breaker_reset_seconds = float(semantic_rules.get("circuit_breaker_reset_seconds", 30.0))
     provider_timeout_seconds = float(semantic_rules.get("provider_timeout_seconds", 5.0))
+    ollama_raw = bool(semantic_rules.get("ollama_raw", False))
+    ollama_options = semantic_rules.get("ollama_options", {})
 
     provider_name = str(semantic_rules.get("provider", "")).strip().lower()
     if provider_name == "litellm" or (provider_name != "ollama" and os.environ.get("LLM_MODEL")):
@@ -87,6 +89,8 @@ def _build_provider(args: argparse.Namespace, semantic_rules: dict) -> OllamaPro
         return OllamaProvider(
             model=model,
             timeout=provider_timeout_seconds,
+            raw=ollama_raw,
+            options=ollama_options if isinstance(ollama_options, dict) else None,
             retry_attempts=retry_attempts,
             retry_base_delay_seconds=retry_base_delay_seconds,
             retry_max_delay_seconds=retry_max_delay_seconds,

@@ -36,7 +36,7 @@ semantic_rules:
   provider: ollama
   mode: enforce
   prompt_version: "v1"
-  guardrail_model: llama-guard-3-8b
+  guardrail_model: llama3.1:8b
   critical_intent_threshold: 0.85
   retry_attempts: 2
   retry_base_delay_seconds: 0.25

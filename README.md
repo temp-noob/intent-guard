@@ -53,6 +53,25 @@ python3 -m venv .venv
 .venv/bin/pytest -q
 ```
 
+Run live Ollama semantic tests only (requires local Ollama + `llama3.1:8b` available):
+
+```bash
+.venv/bin/pytest -q -m runOllamaProvider
+```
+
+If local model responses are slow, increase timeout (seconds):
+
+```bash
+OLLAMA_TIMEOUT_SECONDS=120 .venv/bin/pytest -q -m runOllamaProvider
+```
+
+The live semantic suite defaults to `OLLAMA_RAW=false` and bounded generation tuned for `llama3.1:8b`. You can tune:
+
+```bash
+OLLAMA_TIMEOUT_SECONDS=60 OLLAMA_NUM_PREDICT=256 OLLAMA_RAW=false \
+  .venv/bin/pytest -q -m runOllamaProvider
+```
+
 Integration tests cover all phases:
 - phase 1: interception and logging behavior
 - phase 2: static policy blocking
@@ -79,7 +98,7 @@ semantic_rules:
   provider: ollama # or litellm
   mode: enforce # off | enforce | advisory
   prompt_version: "v1"
-  guardrail_model: llama-guard-3-8b
+  guardrail_model: llama3.1:8b
   critical_intent_threshold: 0.85
   retry_attempts: 2
   retry_base_delay_seconds: 0.25
@@ -104,7 +123,7 @@ INTENT_GUARD_TASK="Only update frontend styles" \
 python -m intent_guard.proxy \
   --policy schema/policy.yaml \
   --target "npx @modelcontextprotocol/server-filesystem /path/to/repo" \
-  --model llama-guard3 \
+  --model llama3.1:8b \
   --approval-webhook "https://approval.internal/intent-guard" \
   --approval-timeout 10 \
   --approval-default-action deny
@@ -272,7 +291,7 @@ from intent_guard import IntentGuardSDK
 
 guard = IntentGuardSDK(
     policy_path="schema/policy.yaml",
-    local_model="llama-guard3",
+    local_model="llama3.1:8b",
     task_context="Only modify UI components"
 )
 
