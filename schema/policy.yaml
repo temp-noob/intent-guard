@@ -10,6 +10,7 @@ static_rules:
     - .env
     - src/auth/*
   max_tokens_per_call: 4000
+  decode_arguments: true
   injection_patterns:
     - "ignore previous instructions"
     - "ignore all prior"
@@ -34,7 +35,8 @@ static_rules:
 semantic_rules:
   provider: ollama
   mode: enforce
-  guardrail_model: llama-guard-3-8b
+  prompt_version: "v1"
+  guardrail_model: llama3.1:8b
   critical_intent_threshold: 0.85
   retry_attempts: 2
   retry_base_delay_seconds: 0.25
@@ -47,9 +49,30 @@ semantic_rules:
     by_tool:
       delete_database: enforce
       purge_all: enforce
+  decision_cache:
+    enabled: true
+    max_size: 256
+    ttl_seconds: 300
   constraints:
     - intent: modify_source_code
       allowed_scope: Actions must only affect UI components or styles.
       forbidden_scope: Should not modify database schemas or auth logic.
     - intent: filesystem_access
       allowed_scope: Read-only access to documentation and assets.
+
+response_rules:
+  action: block
+  detect_base64: true
+  patterns:
+    - name: "AWS Access Key"
+      pattern: "AKIA[0-9A-Z]{16}"
+    - name: "GitHub Token"
+      pattern: "gh[ps]_[A-Za-z0-9_]{36,}"
+    - name: "Email Address"
+      pattern: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+    - name: "SSN"
+      pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+
+tool_change_rules:
+  enabled: true
+  action: warn

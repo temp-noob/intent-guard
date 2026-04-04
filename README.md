@@ -53,6 +53,25 @@ python3 -m venv .venv
 .venv/bin/pytest -q
 ```
 
+Run live Ollama semantic tests only (requires local Ollama + `llama3.1:8b` available):
+
+```bash
+.venv/bin/pytest -q -m runOllamaProvider
+```
+
+If local model responses are slow, increase timeout (seconds):
+
+```bash
+OLLAMA_TIMEOUT_SECONDS=120 .venv/bin/pytest -q -m runOllamaProvider
+```
+
+The live semantic suite defaults to `OLLAMA_RAW=false` and bounded generation tuned for `llama3.1:8b`. You can tune:
+
+```bash
+OLLAMA_TIMEOUT_SECONDS=60 OLLAMA_NUM_PREDICT=256 OLLAMA_RAW=false \
+  .venv/bin/pytest -q -m runOllamaProvider
+```
+
 Integration tests cover all phases:
 - phase 1: interception and logging behavior
 - phase 2: static policy blocking
@@ -78,7 +97,8 @@ custom_policies:
 semantic_rules:
   provider: ollama # or litellm
   mode: enforce # off | enforce | advisory
-  guardrail_model: llama-guard-3-8b
+  prompt_version: "v1"
+  guardrail_model: llama3.1:8b
   critical_intent_threshold: 0.85
   retry_attempts: 2
   retry_base_delay_seconds: 0.25
@@ -103,7 +123,7 @@ INTENT_GUARD_TASK="Only update frontend styles" \
 python -m intent_guard.proxy \
   --policy schema/policy.yaml \
   --target "npx @modelcontextprotocol/server-filesystem /path/to/repo" \
-  --model llama-guard3 \
+  --model llama3.1:8b \
   --approval-webhook "https://approval.internal/intent-guard" \
   --approval-timeout 10 \
   --approval-default-action deny
@@ -118,6 +138,96 @@ python -m intent_guard.proxy \
 - `--approval-webhook`: call this webhook for non-interactive approval decisions
 - `--approval-timeout`: timeout (seconds) for webhook approvals
 - `--approval-default-action`: `allow` or `deny` when webhook approval times out/fails
+
+## Native hook integration
+
+IntentGuard can run as the policy engine behind native hooks in Claude Code, Copilot, and Cursor.
+
+### Evaluate command
+
+Use the unified command:
+
+```bash
+intent-guard evaluate --policy schema/policy.yaml
+```
+
+Input:
+- Reads a hook payload JSON object from stdin
+- Supports generic keys like `tool_name`, `arguments`, `task_context`
+- Also supports nested payloads (`params.name`, `params.arguments`) and common aliases (`tool_input`, `args`, `prompt`)
+
+Output:
+- Prints a `GuardDecision` JSON object to stdout
+- Exit code `0` for allow, `1` for block, `2` for invalid input
+
+### Hook config templates
+
+Template files are shipped under `hooks/`:
+- `hooks/claude-code/settings.json`
+- `hooks/copilot/hooks.json`
+- `hooks/cursor/hooks.json`
+
+Each template invokes:
+
+```bash
+cat | intent-guard evaluate --policy schema/policy.yaml
+```
+
+This lets platform-native hooks call IntentGuard directly instead of wrapping only MCP servers.
+
+## Encoded payload detection
+
+Static checks can decode and normalize argument payloads before matching:
+- URL decoding
+- Unicode normalization (NFKC)
+- Base64 decoding (when valid)
+
+Enable or disable via:
+
+```yaml
+static_rules:
+  decode_arguments: true
+```
+
+When enabled, injection, sensitive-data, and protected-path checks run against decoded variants to catch obfuscated bypasses.
+
+## Response-side inspection
+
+IntentGuard can inspect MCP server responses before forwarding them to the client.
+
+Configure `response_rules` in policy:
+
+```yaml
+response_rules:
+  action: block # block | warn | redact
+  detect_base64: true
+  patterns:
+    - name: "GitHub Token"
+      pattern: "gh[ps]_[A-Za-z0-9_]{36,}"
+```
+
+Behavior:
+- `block`: return JSON-RPC error and suppress original response
+- `warn`: forward response and log warning decision
+- `redact`: redact matched text and forward sanitized response
+
+## Tool description change detection (rug-pull protection)
+
+IntentGuard can snapshot MCP `tools/list` metadata and detect changes over time.
+
+Configure:
+
+```yaml
+tool_change_rules:
+  enabled: true
+  action: warn # warn | block
+```
+
+Behavior:
+- On first `tools/list`, stores snapshot in `.intent-guard/tool-snapshots/<server-hash>.json`
+- On subsequent `tools/list`, compares `name`, `description`, and `inputSchema`
+- `warn`: log warning and continue
+- `block`: block response when drift is detected
 
 ### Semantic mode and provider failure behavior
 
@@ -139,6 +249,22 @@ Behavior matrix for tool criticality tiers (example mapping):
 | Low-risk tools | `off` | Fail-open without warning severity |
 
 Define tiers by assigning tools in `provider_fail_mode.by_tool`.
+
+`semantic_rules.prompt_version` is copied into every semantic decision and log entry as `semantic_prompt_version` so prompt changes are auditable.
+
+### Semantic decision caching
+
+To reduce repeated provider calls for identical semantic evaluations:
+
+```yaml
+semantic_rules:
+  decision_cache:
+    enabled: true
+    max_size: 256
+    ttl_seconds: 300
+```
+
+Cache key uses `(tool_name, arguments, task_context)`. Static checks always run; only semantic verdicts are cached.
 
 ### LiteLLM provider
 
@@ -165,7 +291,7 @@ from intent_guard import IntentGuardSDK
 
 guard = IntentGuardSDK(
     policy_path="schema/policy.yaml",
-    local_model="llama-guard3",
+    local_model="llama3.1:8b",
     task_context="Only modify UI components"
 )
 
@@ -185,10 +311,21 @@ print(decision.allowed, decision.reason)
 - `rule_id`
 - `timestamp` (UTC ISO-8601)
 - `override` (`who`/`why`/`ttl`, when manually approved)
+- `semantic_prompt_version` (when semantic checks are applied)
 
 Backward compatibility:
 - Existing fields `allowed`, `reason`, `requires_approval`, `semantic_score` are unchanged.
 - New fields are always present with safe defaults, so existing consumers can ignore them.
+
+## Semantic eval harness
+
+IntentGuard ships a lightweight semantic eval harness used in tests to measure model behavior on known-safe and known-unsafe tool calls.
+
+- Dataset fixtures: `tests/fixtures/semantic_eval_dataset.json`
+- Replay verdicts: `tests/fixtures/semantic_eval_verdicts.json`
+- Metrics computed: precision, recall, accuracy
+
+This enables reproducible regression checks for semantic policy quality.
 
 Versioning/migration strategy:
 - Keep parsing logic tolerant of unknown fields.

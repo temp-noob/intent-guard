@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
-import re
 import os
+import re
+import urllib.parse
+import unicodedata
+from base64 import b64decode
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -12,6 +15,7 @@ from uuid import uuid4
 
 import yaml
 
+from intent_guard.sdk.decision_cache import SemanticDecisionCache
 from intent_guard.sdk.providers import GuardrailProvider, SemanticProviderUnavailable
 
 
@@ -29,16 +33,29 @@ class GuardDecision:
     rule_id: str = "policy.default"
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
     override: dict[str, Any] | None = None
+    semantic_prompt_version: str | None = None
 
 
 class IntentGuardEngine:
     def __init__(self, policy: dict[str, Any], provider: GuardrailProvider | None = None):
         self.policy = policy or {}
         self.provider = provider
+        self.semantic_cache = self._build_semantic_cache()
 
     def reload_policy(self, policy: dict[str, Any]) -> None:
         """Hot-swap the policy dict. In-flight evaluations may use old policy."""
         self.policy = policy
+        self.semantic_cache = self._build_semantic_cache()
+
+    def _build_semantic_cache(self) -> SemanticDecisionCache:
+        semantic_rules = self.policy.get("semantic_rules", {})
+        cache_config = semantic_rules.get("decision_cache", {})
+        enabled = bool(cache_config.get("enabled", False))
+        if not enabled:
+            return SemanticDecisionCache(max_size=1, ttl_seconds=1)
+        max_size = int(cache_config.get("max_size", 256))
+        ttl_seconds = int(cache_config.get("ttl_seconds", 300))
+        return SemanticDecisionCache(max_size=max_size, ttl_seconds=ttl_seconds)
 
     @classmethod
     def from_policy_file(cls, policy_path: str | Path, provider: GuardrailProvider | None = None) -> "IntentGuardEngine":
@@ -54,13 +71,19 @@ class IntentGuardEngine:
                 sys.stderr.write(f"Policy warning: {err}\\n")
         return cls(policy=policy, provider=provider)
 
-    def evaluate_tool_call(self, tool_name: str, arguments: dict[str, Any] | None, task_context: str | None = None) -> GuardDecision:
+    def evaluate_tool_call(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+        task_context: str | None = None,
+        semantic_example_name: str | None = None,
+    ) -> GuardDecision:
         arguments = arguments or {}
         static_decision = self._run_static_checks(tool_name, arguments)
         if not static_decision.allowed:
             return static_decision
 
-        semantic_decision = self._run_semantic_checks(tool_name, arguments, task_context)
+        semantic_decision = self._run_semantic_checks(tool_name, arguments, task_context, semantic_example_name)
         if semantic_decision is not None:
             return semantic_decision
         return self._decision(
@@ -73,6 +96,8 @@ class IntentGuardEngine:
 
     def _run_static_checks(self, tool_name: str, arguments: dict[str, Any]) -> GuardDecision:
         static_rules = self.policy.get("static_rules", {})
+        decode_arguments = bool(static_rules.get("decode_arguments", True))
+        argument_variants = self._extract_argument_variants(arguments, decode=decode_arguments)
         forbidden_tools = set(static_rules.get("forbidden_tools", []))
         if tool_name in forbidden_tools:
             return self._decision(
@@ -98,7 +123,7 @@ class IntentGuardEngine:
 
         protected_paths = static_rules.get("protected_paths", [])
         if protected_paths:
-            for path in self._extract_path_candidates(arguments):
+            for path in self._extract_path_candidates(arguments, decode=decode_arguments):
                 for pattern in protected_paths:
                     if self._matches_path(path, pattern):
                         return self._decision(
@@ -141,24 +166,24 @@ class IntentGuardEngine:
 
         injection_patterns = static_rules.get("injection_patterns", [])
         if injection_patterns:
-            for s in self._extract_all_strings(arguments):
-                for pattern in injection_patterns:
-                    if re.search(pattern, s, re.IGNORECASE):
-                        return self._decision(
-                            allowed=False,
-                            reason=f"potential injection detected in argument: pattern '{pattern}' matched",
-                            code="BLOCK_INJECTION_DETECTED",
-                            severity="high",
-                            rule_id="static.injection_patterns",
-                        )
+            decision = self._match_pattern_block(
+                argument_variants=argument_variants,
+                patterns=injection_patterns,
+                code="BLOCK_INJECTION_DETECTED",
+                rule_id="static.injection_patterns",
+                reason_template="potential injection detected in argument: pattern '{pattern}' matched",
+                severity="high",
+            )
+            if decision is not None:
+                return decision
 
         sensitive_patterns = static_rules.get("sensitive_data_patterns", [])
         if sensitive_patterns:
-            for string_val in self._extract_all_strings(arguments):
+            for variant in argument_variants:
                 for pat_config in sensitive_patterns:
                     pat_name = pat_config.get("name", "unknown")
                     pat_regex = pat_config.get("pattern", "")
-                    if pat_regex and re.search(pat_regex, string_val):
+                    if pat_regex and re.search(pat_regex, variant, re.IGNORECASE):
                         return self._decision(
                             allowed=False,
                             reason=f"sensitive data detected: {pat_name}",
@@ -176,16 +201,26 @@ class IntentGuardEngine:
             rule_id="static.passed",
         )
 
-    def _extract_all_strings(self, value):
-        """Recursively extract all string values from nested dicts/lists."""
-        if isinstance(value, dict):
-            for nested in value.values():
-                yield from self._extract_all_strings(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                yield from self._extract_all_strings(nested)
-        elif isinstance(value, str):
-            yield value
+    def _match_pattern_block(
+        self,
+        argument_variants: list[str],
+        patterns: list[str],
+        code: str,
+        rule_id: str,
+        reason_template: str,
+        severity: str,
+    ) -> GuardDecision | None:
+        for value in argument_variants:
+            for pattern in patterns:
+                if re.search(pattern, value, re.IGNORECASE):
+                    return self._decision(
+                        allowed=False,
+                        reason=reason_template.format(pattern=pattern),
+                        code=code,
+                        severity=severity,
+                        rule_id=rule_id,
+                    )
+        return None
 
     def _iter_custom_policies(self) -> Iterable[dict[str, Any]]:
         raw_custom_policies = self.policy.get("custom_policies", [])
@@ -200,6 +235,7 @@ class IntentGuardEngine:
         tool_name: str,
         arguments: dict[str, Any],
         task_context: str | None,
+        semantic_example_name: str | None = None,
     ) -> GuardDecision | None:
         semantic_rules = self.policy.get("semantic_rules", {})
         if not semantic_rules:
@@ -216,15 +252,41 @@ class IntentGuardEngine:
             )
 
         threshold = float(semantic_rules.get("critical_intent_threshold", 0.85))
-        prompt = self._build_semantic_prompt(tool_name, arguments, task_context, semantic_rules.get("constraints", []))
-        try:
-            verdict = self.provider.judge(prompt)
-        except SemanticProviderUnavailable as exc:
-            return self._semantic_provider_failure_decision(
-                tool_name=tool_name,
-                semantic_rules=semantic_rules,
-                reason=str(exc) or "semantic provider failed",
-            )
+        prompt_version = str(semantic_rules.get("prompt_version", "v1"))
+        prompt = self._build_semantic_prompt(
+            tool_name,
+            arguments,
+            task_context,
+            semantic_rules.get("constraints", []),
+            prompt_version,
+            semantic_example_name,
+        )
+        cache_config = semantic_rules.get("decision_cache", {})
+        cache_enabled = bool(cache_config.get("enabled", False))
+        cache_key = self.semantic_cache.make_key(tool_name, arguments, task_context)
+        if cache_enabled:
+            cached = self.semantic_cache.get(cache_key)
+            if cached is not None:
+                verdict = cached
+            else:
+                try:
+                    verdict = self.provider.judge(prompt)
+                except SemanticProviderUnavailable as exc:
+                    return self._semantic_provider_failure_decision(
+                        tool_name=tool_name,
+                        semantic_rules=semantic_rules,
+                        reason=str(exc) or "semantic provider failed",
+                    )
+                self.semantic_cache.set(cache_key, verdict)
+        else:
+            try:
+                verdict = self.provider.judge(prompt)
+            except SemanticProviderUnavailable as exc:
+                return self._semantic_provider_failure_decision(
+                    tool_name=tool_name,
+                    semantic_rules=semantic_rules,
+                    reason=str(exc) or "semantic provider failed",
+                )
 
         if verdict.safe and verdict.score >= threshold:
             return self._decision(
@@ -234,24 +296,29 @@ class IntentGuardEngine:
                 code="ALLOW_SEMANTIC",
                 severity="info",
                 rule_id="semantic.threshold",
+                semantic_prompt_version=prompt_version,
             )
         if mode == "advisory":
+            advisory_reason = verdict.reason or f"semantic advisory alert (score={verdict.score:.2f})"
             return self._decision(
                 allowed=True,
-                reason=f"semantic advisory alert (score={verdict.score:.2f})",
+                reason=advisory_reason,
                 semantic_score=verdict.score,
                 code="ALLOW_SEMANTIC_ADVISORY",
                 severity="warning",
                 rule_id="semantic.advisory",
+                semantic_prompt_version=prompt_version,
             )
+        blocked_reason = verdict.reason or f"semantic check failed (score={verdict.score:.2f})"
         return self._decision(
             allowed=False,
-            reason=f"semantic check failed (score={verdict.score:.2f})",
+            reason=blocked_reason,
             requires_approval=True,
             semantic_score=verdict.score,
             code="BLOCK_SEMANTIC",
             severity="high",
             rule_id="semantic.threshold",
+            semantic_prompt_version=prompt_version,
         )
 
     def _semantic_provider_failure_decision(
@@ -344,15 +411,59 @@ class IntentGuardEngine:
         elif isinstance(value, str):
             yield value
 
-    def _extract_path_candidates(self, value: Any, parent_key: str = "") -> Iterable[str]:
+    def _extract_argument_variants(self, arguments: dict[str, Any], decode: bool) -> list[str]:
+        variants: list[str] = []
+        for value in self._extract_all_strings(arguments):
+            variants.append(value)
+            if decode:
+                variants.extend(self._decode_variants(value))
+        return variants
+
+    @staticmethod
+    def _decode_variants(value: str) -> list[str]:
+        decoded: list[str] = []
+
+        url_decoded = urllib.parse.unquote(value)
+        if url_decoded != value:
+            decoded.append(url_decoded)
+
+        unicode_normalized = unicodedata.normalize("NFKC", value)
+        if unicode_normalized != value:
+            decoded.append(unicode_normalized)
+
+        b64 = IntentGuardEngine._try_base64_decode(value)
+        if b64 is not None and b64 != value:
+            decoded.append(b64)
+        return decoded
+
+    @staticmethod
+    def _try_base64_decode(value: str) -> str | None:
+        candidate = value.strip()
+        if len(candidate) < 12:
+            return None
+        candidate = candidate.replace("-", "+").replace("_", "/")
+        if len(candidate) % 4:
+            candidate += "=" * (4 - (len(candidate) % 4))
+        try:
+            decoded = b64decode(candidate, validate=True)
+            text = decoded.decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+        return text if text else None
+
+    def _extract_path_candidates(self, value: Any, parent_key: str = "", decode: bool = False) -> Iterable[str]:
         if isinstance(value, dict):
             for key, nested in value.items():
-                yield from self._extract_path_candidates(nested, parent_key=key)
+                yield from self._extract_path_candidates(nested, parent_key=key, decode=decode)
         elif isinstance(value, list):
             for nested in value:
-                yield from self._extract_path_candidates(nested, parent_key=parent_key)
+                yield from self._extract_path_candidates(nested, parent_key=parent_key, decode=decode)
         elif isinstance(value, str) and self._looks_like_path(value, parent_key):
             yield value
+            if decode:
+                for decoded_value in self._decode_variants(value):
+                    if self._looks_like_path(decoded_value, parent_key):
+                        yield decoded_value
 
     @staticmethod
     def _looks_like_path(value: str, parent_key: str) -> bool:
@@ -378,12 +489,23 @@ class IntentGuardEngine:
         arguments: dict[str, Any],
         task_context: str | None,
         constraints: list[dict[str, Any]],
+        prompt_version: str,
+        semantic_example_name: str | None = None,
     ) -> str:
         constraint_text = json.dumps(constraints, indent=2, sort_keys=True)
         return (
+            "You are a policy guardrail evaluator.\n"
+            f"PromptVersion: {prompt_version}\n"
+            f"ExampleName: {semantic_example_name or 'none'}\n"
             f"Task: {task_context or 'No task context supplied'}\n"
-            f"Tool Call: {tool_name}({json.dumps(arguments, sort_keys=True)})\n"
-            f"Policy Constraints:\n{constraint_text}\n\n"
-            "Decide whether this action is SAFE or UNSAFE under the policy. "
-            "Respond with SAFE or UNSAFE and include a score from 0.0 to 1.0."
+            f"ToolName: {tool_name}\n"
+            f"Arguments: {json.dumps(arguments, sort_keys=True)}\n"
+            f"PolicyConstraints: {constraint_text}\n\n"
+            "Return a strict JSON object only with keys:\n"
+            '  {"safe": <boolean>, "score": <number 0.0..1.0>, "reason": <string>}\n'
+            "Rules:\n"
+            "- safe=true only when call is policy-aligned with low risk.\n"
+            "- score is confidence that the call is safe under constraints.\n"
+            "- reason must be concise and specific.\n"
+            "- No markdown, no extra text."
         )

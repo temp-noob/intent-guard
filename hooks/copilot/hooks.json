@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "id": "intent-guard-pretool",
+        "command": "cat | intent-guard evaluate --policy schema/policy.yaml"
+      }
+    ]
+  }
+}

@@ -25,6 +25,12 @@ dev = ["pytest>=8.0.0"]
 
 [project.scripts]
 intent-guard-proxy = "intent_guard.proxy:main"
+intent-guard = "intent_guard.cli:main"
+
+[tool.pytest.ini_options]
+markers = [
+  "runOllamaProvider: runs live semantic tests against a local Ollama provider",
+]
 
 [tool.setuptools.packages.find]
 include = ["intent_guard*"]

@@ -15,6 +15,8 @@ from typing import Any, Callable
 import requests
 
 from intent_guard.sdk.engine import GuardDecision, IntentGuardEngine
+from intent_guard.sdk.response_guard import ResponseGuard
+from intent_guard.sdk.tool_snapshot import ToolSnapshotStore
 
 ApprovalCallback = Callable[[GuardDecision, dict[str, Any]], bool | dict[str, Any]]
 LogCallback = Callable[[dict[str, Any]], None]
@@ -52,6 +54,7 @@ def webhook_approval_callback(
                 "policy_version": decision.policy_version,
                 "rule_id": decision.rule_id,
                 "timestamp": decision.timestamp,
+                "semantic_prompt_version": decision.semantic_prompt_version,
             },
             "request": {
                 "id": request.get("id"),
@@ -102,6 +105,13 @@ class MCPProxy:
         self.task_context = task_context
         self.logger = logger
         self.advisory_mode = advisory_mode
+        self.response_guard = ResponseGuard(self.engine.policy.get("response_rules", {}))
+        self.detect_tool_changes = bool(self.engine.policy.get("tool_change_rules", {}).get("enabled", False))
+        self.tool_change_action = str(self.engine.policy.get("tool_change_rules", {}).get("action", "warn")).lower()
+        if self.tool_change_action not in {"warn", "block"}:
+            self.tool_change_action = "warn"
+        self.server_id = " ".join(self.target_command) if self.target_command else "default-server"
+        self.tool_snapshot_store = ToolSnapshotStore()
 
     def process_client_message(self, message: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         if message.get("method") != "tools/call":
@@ -145,10 +155,39 @@ class MCPProxy:
                     "policy_version": decision.policy_version,
                     "rule_id": decision.rule_id,
                     "timestamp": decision.timestamp,
+                    "semantic_prompt_version": decision.semantic_prompt_version,
                 },
             },
         }
         return False, error
+
+    def process_server_message(self, message: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+        if self._is_tools_list_response(message) and self.detect_tool_changes:
+            is_ok, reason = self.tool_snapshot_store.check_or_store(server_id=self.server_id, tools_payload=message)
+            severity = "info" if is_ok else "high"
+            code = "TOOL_SNAPSHOT_OK" if is_ok else "TOOL_SNAPSHOT_CHANGED"
+            self._log_response_event(allow=True, reason=reason, code=code, severity=severity)
+            if not is_ok and self.tool_change_action == "block":
+                return False, self._response_block_error(message, reason)
+
+        decision = self.response_guard.inspect(message)
+        self._log_response_event(
+            allow=decision.allow,
+            reason=decision.reason,
+            code=decision.code,
+            severity=decision.severity,
+        )
+
+        if decision.allow and decision.redacted_response is not None:
+            return True, decision.redacted_response
+        if decision.allow:
+            return True, None
+        return False, self._response_block_error(message, decision.reason)
+
+    @staticmethod
+    def _is_tools_list_response(message: dict[str, Any]) -> bool:
+        result = message.get("result")
+        return isinstance(result, dict) and isinstance(result.get("tools"), list)
 
     def _log_tool_call(self, tool_name: str, arguments: dict[str, Any], decision: GuardDecision) -> None:
         entry = {
@@ -164,6 +203,7 @@ class MCPProxy:
             "rule_id": decision.rule_id,
             "timestamp": decision.timestamp,
             "override": decision.override,
+            "semantic_prompt_version": decision.semantic_prompt_version,
             "would_block": not decision.allowed,
         }
         if self.logger is not None:
@@ -171,6 +211,32 @@ class MCPProxy:
         else:
             sys.stderr.write(json.dumps(entry) + "\n")
             sys.stderr.flush()
+
+    def _log_response_event(self, allow: bool, reason: str, code: str, severity: str) -> None:
+        entry = {
+            "event": "response_inspection",
+            "allowed": allow,
+            "reason": reason,
+            "decision_code": code,
+            "severity": severity,
+        }
+        if self.logger is not None:
+            self.logger(entry)
+        else:
+            sys.stderr.write(json.dumps(entry) + "\n")
+            sys.stderr.flush()
+
+    @staticmethod
+    def _response_block_error(message: dict[str, Any], reason: str) -> dict[str, Any]:
+        return {
+            "jsonrpc": message.get("jsonrpc", "2.0"),
+            "id": message.get("id"),
+            "error": {
+                "code": -32002,
+                "message": f"IntentGuard blocked MCP response: {reason}",
+                "data": {"decision_code": "BLOCK_RESPONSE", "severity": "high"},
+            },
+        }
 
     def run_stdio(self) -> int:
         child = subprocess.Popen(
@@ -182,12 +248,39 @@ class MCPProxy:
             bufsize=1,
         )
 
+        def forward_stdout_stream(source: Any, target: Any) -> None:
+            for line in source:
+                stripped = line.strip()
+                if not stripped:
+                    target.write(line)
+                    target.flush()
+                    continue
+                try:
+                    message = json.loads(stripped)
+                except json.JSONDecodeError:
+                    target.write(line)
+                    target.flush()
+                    continue
+
+                should_forward, transformed = self.process_server_message(message)
+                if not should_forward:
+                    if transformed is not None:
+                        target.write(json.dumps(transformed) + "\n")
+                        target.flush()
+                    continue
+                if transformed is not None:
+                    target.write(json.dumps(transformed) + "\n")
+                    target.flush()
+                    continue
+                target.write(line)
+                target.flush()
+
         def forward_stream(source: Any, target: Any) -> None:
             for line in source:
                 target.write(line)
                 target.flush()
 
-        stdout_thread = threading.Thread(target=forward_stream, args=(child.stdout, sys.stdout), daemon=True)
+        stdout_thread = threading.Thread(target=forward_stdout_stream, args=(child.stdout, sys.stdout), daemon=True)
         stderr_thread = threading.Thread(target=forward_stream, args=(child.stderr, sys.stderr), daemon=True)
         stdout_thread.start()
         stderr_thread.start()

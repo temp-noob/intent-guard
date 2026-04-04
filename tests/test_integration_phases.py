@@ -107,11 +107,12 @@ def test_phase3_ollama_semantic_judging(monkeypatch):
             return None
 
         def json(self):
-            return {"response": "UNSAFE\nscore: 0.91"}
+            return {"response": '{"safe": false, "score": 0.91, "reason": "violates task scope"}'}
 
     def fake_post(url, json, timeout):  # noqa: A002
         assert url.endswith("/api/generate")
         assert "Task:" in json["prompt"]
+        assert json["format"] == "json"
         return FakeResponse()
 
     monkeypatch.setattr("requests.post", fake_post)
@@ -133,6 +134,7 @@ def test_phase3_ollama_semantic_judging(monkeypatch):
     )
     assert decision.allowed is False
     assert decision.requires_approval is True
+    assert decision.semantic_prompt_version == "v1"
 
 
 def test_phase4_feedback_loop_pause_and_resume():
@@ -273,7 +275,7 @@ def test_phase4_break_glass_signed_token_validates_signature_and_expiry(monkeypa
 def test_semantic_mode_advisory_allows_but_records_alert():
     class FakeProvider:
         def judge(self, _prompt):
-            return SemanticVerdict(safe=False, score=0.1, raw="UNSAFE score: 0.1")
+            return SemanticVerdict(safe=False, score=0.1, raw='{"safe":false,"score":0.1}', reason="context mismatch")
 
     engine = IntentGuardEngine(
         policy={"semantic_rules": {"mode": "advisory", "critical_intent_threshold": 0.85, "constraints": []}},
@@ -284,6 +286,8 @@ def test_semantic_mode_advisory_allows_but_records_alert():
     assert decision.allowed is True
     assert decision.code == "ALLOW_SEMANTIC_ADVISORY"
     assert decision.severity == "warning"
+    assert decision.reason == "context mismatch"
+    assert decision.semantic_prompt_version == "v1"
 
 
 def test_semantic_provider_fail_mode_can_be_per_tool():
@@ -341,9 +345,10 @@ def test_litellm_provider_uses_retries_and_env_model(monkeypatch):
     def fake_completion(**kwargs):
         attempts["count"] += 1
         assert kwargs["model"] == "claude-3-5-sonnet-20241022"
+        assert kwargs["response_format"] == {"type": "json_object"}
         if attempts["count"] == 1:
             raise RuntimeError("transient error")
-        return {"choices": [{"message": {"content": "SAFE score: 0.92"}}]}
+        return {"choices": [{"message": {"content": '{"safe": true, "score": 0.92, "reason": "aligned"}'}}]}
 
     monkeypatch.setenv("LLM_MODEL", "claude-3-5-sonnet-20241022")
     monkeypatch.setattr("intent_guard.sdk.providers.litellm_completion", fake_completion)
@@ -354,3 +359,16 @@ def test_litellm_provider_uses_retries_and_env_model(monkeypatch):
     assert verdict.safe is True
     assert verdict.score == 0.92
     assert attempts["count"] == 2
+
+
+def test_litellm_provider_rejects_non_json_verdict(monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "claude-3-5-sonnet-20241022")
+    monkeypatch.setattr(
+        "intent_guard.sdk.providers.litellm_completion",
+        lambda **_kwargs: {"choices": [{"message": {"content": "SAFE 0.9"}}]},
+    )
+    monkeypatch.setattr("intent_guard.sdk.providers.time.sleep", lambda *_args, **_kwargs: None)
+    provider = LiteLLMProvider(retry_attempts=0)
+
+    with pytest.raises(SemanticProviderUnavailable):
+        provider.judge("prompt")

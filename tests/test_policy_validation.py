@@ -89,6 +89,7 @@ def test_valid_complex_policy():
         "semantic_rules": {
             "provider": "ollama",
             "mode": "enforce",
+            "prompt_version": "v1",
             "critical_intent_threshold": 0.85,
             "constraints": [
                 {"intent": "modify_source_code", "allowed_scope": "UI only"},
@@ -96,3 +97,58 @@ def test_valid_complex_policy():
         },
     }
     assert validate_policy(policy) == []
+
+
+def test_invalid_prompt_version():
+    policy = {"semantic_rules": {"prompt_version": ""}}
+    errors = validate_policy(policy)
+    assert any("prompt_version" in e for e in errors)
+
+
+def test_invalid_response_rules_action():
+    policy = {"response_rules": {"action": "quarantine"}}
+    errors = validate_policy(policy)
+    assert any("response_rules.action" in e for e in errors)
+
+
+def test_valid_response_rules():
+    policy = {
+        "response_rules": {
+            "action": "redact",
+            "detect_base64": True,
+            "patterns": [{"name": "token", "pattern": r"ghp_[A-Za-z0-9_]+"}],
+        }
+    }
+    errors = validate_policy(policy)
+    assert errors == []
+
+
+def test_invalid_tool_change_rules():
+    policy = {"tool_change_rules": {"enabled": "yes", "action": "quarantine"}}
+    errors = validate_policy(policy)
+    assert any("tool_change_rules.enabled" in e for e in errors)
+    assert any("tool_change_rules.action" in e for e in errors)
+
+
+def test_valid_tool_change_rules():
+    policy = {"tool_change_rules": {"enabled": True, "action": "warn"}}
+    errors = validate_policy(policy)
+    assert errors == []
+
+
+def test_invalid_decode_arguments_type():
+    policy = {"static_rules": {"decode_arguments": "yes"}}
+    errors = validate_policy(policy)
+    assert any("decode_arguments" in e for e in errors)
+
+
+def test_invalid_decision_cache_settings():
+    policy = {
+        "semantic_rules": {
+            "decision_cache": {"enabled": "yes", "max_size": 0, "ttl_seconds": -1},
+        }
+    }
+    errors = validate_policy(policy)
+    assert any("decision_cache.enabled" in e for e in errors)
+    assert any("decision_cache.max_size" in e for e in errors)
+    assert any("decision_cache.ttl_seconds" in e for e in errors)
