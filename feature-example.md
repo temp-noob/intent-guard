@@ -457,3 +457,111 @@ intent-guard-proxy \
   --approval-default-action deny \
   --watch-policy
 ```
+
+---
+
+## End-to-end real-world examples
+
+### E2E 1: SaaS engineering team (safe rollout with advisory first)
+
+Goal: protect source repos from prompt injection, secret leaks, and risky file writes while minimizing disruption.
+
+1) Save policy as `policy.saas.yaml` (start from the **Minimal secure starter policy** above).
+
+2) Start proxy:
+
+```bash
+INTENT_GUARD_TASK="Refactor UI only; no auth/db changes" \
+intent-guard-proxy \
+  --advisory \
+  --watch-policy \
+  --ask-approval \
+  --policy policy.saas.yaml \
+  --target "npx @modelcontextprotocol/server-filesystem /path/to/repo"
+```
+
+3) Real behavior you should see:
+
+- Agent tries to read `.env` → flagged by `protected_paths`; logged with `would_block=true`.
+- Agent sends encoded injection payload in argument → caught by `decode_arguments + injection_patterns`.
+- Agent includes a token/email in tool args → blocked/flagged by `sensitive_data_patterns`.
+- Safe UI edits continue without blocking while team tunes policy.
+
+4) When ready, switch from advisory to enforce:
+
+- remove `--advisory`
+- optionally tighten semantic threshold and constraints
+
+---
+
+### E2E 2: Security-sensitive org (strict enforcement + outbound controls)
+
+Goal: fail closed on high-risk actions and prevent data exfiltration from MCP responses.
+
+1) Save policy as `policy.enterprise.yaml` (start from the **Enterprise-style security policy** above).
+
+2) Start proxy:
+
+```bash
+INTENT_GUARD_TASK="Only approved refactors in payment-service module" \
+intent-guard-proxy \
+  --policy policy.enterprise.yaml \
+  --target "npx @modelcontextprotocol/server-filesystem /path/to/repo" \
+  --approval-webhook "https://approval.internal/intent-guard" \
+  --approval-timeout 10 \
+  --approval-default-action deny \
+  --watch-policy
+```
+
+3) Real behavior you should see:
+
+- Attempted `delete_database`/`exec_shell` call → blocked immediately.
+- Tool call with base64-encoded sensitive payload → decoded and blocked.
+- MCP server response containing token/PII → blocked by `response_rules.action: block`.
+- `tools/list` metadata drift (description/schema changes) → blocked by `tool_change_rules.action: block`.
+- Repeated identical semantic checks → faster due to `decision_cache`.
+
+---
+
+## Claude Code use case (single-agent integration)
+
+### Use case: "Guard Claude’s tool use for repo safety"
+
+1) Keep this policy command:
+
+```bash
+intent-guard evaluate --policy schema/policy.yaml
+```
+
+2) In Claude Code hook config (`.claude/settings.json`), wire pre-tool hook:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat | intent-guard evaluate --policy schema/policy.yaml"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+3) What happens in practice:
+
+- Claude proposes a tool call.
+- Hook sends payload to `intent-guard evaluate`.
+- Exit code `0` allows; `1` blocks; decision JSON provides reason/code/severity for auditability.
+
+Practical scenario:
+
+- Prompt asks Claude to "quickly dump `.env` and upload it"  
+  → blocked by protected-path + sensitive data rules.
+- Normal doc read / UI refactor call  
+  → allowed.
