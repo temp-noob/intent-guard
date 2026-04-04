@@ -17,6 +17,7 @@ import yaml
 
 from intent_guard.sdk.decision_cache import SemanticDecisionCache
 from intent_guard.sdk.providers import GuardrailProvider, SemanticProviderUnavailable
+from intent_guard.sdk.rate_limiter import ToolRateLimiter
 
 
 @dataclass
@@ -41,11 +42,13 @@ class IntentGuardEngine:
         self.policy = policy or {}
         self.provider = provider
         self.semantic_cache = self._build_semantic_cache()
+        self.rate_limiter = self._build_rate_limiter()
 
     def reload_policy(self, policy: dict[str, Any]) -> None:
         """Hot-swap the policy dict. In-flight evaluations may use old policy."""
         self.policy = policy
         self.semantic_cache = self._build_semantic_cache()
+        self.rate_limiter = self._build_rate_limiter()
 
     def _build_semantic_cache(self) -> SemanticDecisionCache:
         semantic_rules = self.policy.get("semantic_rules", {})
@@ -56,6 +59,13 @@ class IntentGuardEngine:
         max_size = int(cache_config.get("max_size", 256))
         ttl_seconds = int(cache_config.get("ttl_seconds", 300))
         return SemanticDecisionCache(max_size=max_size, ttl_seconds=ttl_seconds)
+
+    def _build_rate_limiter(self) -> ToolRateLimiter:
+        static_rules = self.policy.get("static_rules", {})
+        rate_limits_config = static_rules.get("rate_limits")
+        if not rate_limits_config or not isinstance(rate_limits_config, dict):
+            return ToolRateLimiter()
+        return ToolRateLimiter.from_config(rate_limits_config)
 
     @classmethod
     def from_policy_file(cls, policy_path: str | Path, provider: GuardrailProvider | None = None) -> "IntentGuardEngine":
@@ -119,6 +129,17 @@ class IntentGuardEngine:
                 code="BLOCK_TOKEN_LIMIT",
                 severity="medium",
                 rule_id="static.max_tokens_per_call",
+            )
+
+        allowed, rate_reason = self.rate_limiter.check(tool_name)
+        if not allowed:
+            return self._decision(
+                allowed=False,
+                reason=rate_reason,
+                requires_approval=False,
+                code="BLOCK_RATE_LIMIT",
+                severity="medium",
+                rule_id="static.rate_limits",
             )
 
         protected_paths = static_rules.get("protected_paths", [])

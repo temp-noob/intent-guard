@@ -10,6 +10,17 @@ static_rules:
     - .env
     - src/auth/*
   max_tokens_per_call: 4000
+  rate_limits:
+    default:
+      max_calls: 60
+      window_seconds: 60
+    by_tool:
+      write_file:
+        max_calls: 10
+        window_seconds: 60
+      delete_file:
+        max_calls: 5
+        window_seconds: 60
   decode_arguments: true
   injection_patterns:
     - "ignore previous instructions"
