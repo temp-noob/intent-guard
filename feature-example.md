@@ -53,7 +53,27 @@ custom_policies:
 
 ---
 
-## 5) Prompt injection detection
+## 5) Per-tool sliding-window rate limiting (opt-in)
+
+```yaml
+static_rules:
+  rate_limits:
+    enabled: 1 # required to turn on rate limiting; 0/false bypasses checks
+    default:
+      max_calls: 60
+      window_seconds: 60
+    by_tool:
+      write_file:
+        max_calls: 10
+        window_seconds: 60
+      delete_file:
+        max_calls: 5
+        window_seconds: 60
+```
+
+---
+
+## 6) Prompt injection detection
 
 ```yaml
 static_rules:
@@ -66,7 +86,7 @@ static_rules:
 
 ---
 
-## 6) Secret/PII detection in arguments
+## 7) Secret/PII detection in arguments
 
 ```yaml
 static_rules:
@@ -83,7 +103,7 @@ static_rules:
 
 ---
 
-## 7) Encoded bypass defense (URL/Base64/Unicode normalization)
+## 8) Encoded bypass defense (URL/Base64/Unicode normalization)
 
 ```yaml
 static_rules:
@@ -92,7 +112,7 @@ static_rules:
 
 ---
 
-## 8) Semantic intent evaluation (task-aware guardrails)
+## 9) Semantic intent evaluation (task-aware guardrails)
 
 ```yaml
 semantic_rules:
@@ -106,7 +126,7 @@ semantic_rules:
 
 ---
 
-## 9) Structured semantic verdicts + prompt versioning
+## 10) Structured semantic verdicts + prompt versioning
 
 ```yaml
 semantic_rules:
@@ -117,7 +137,7 @@ Note: structured verdict parsing is built into the semantic provider path; this 
 
 ---
 
-## 10) Provider resilience (retry/jitter/circuit breaker)
+## 11) Provider resilience (retry/jitter/circuit breaker)
 
 ```yaml
 semantic_rules:
@@ -133,7 +153,7 @@ semantic_rules:
 
 ---
 
-## 11) Per-tool semantic fail mode (safe fallback behavior)
+## 12) Per-tool semantic fail mode (safe fallback behavior)
 
 ```yaml
 semantic_rules:
@@ -146,7 +166,7 @@ semantic_rules:
 
 ---
 
-## 12) Semantic decision caching (LRU + TTL)
+## 13) Semantic decision caching (LRU + TTL)
 
 ```yaml
 semantic_rules:
@@ -158,7 +178,7 @@ semantic_rules:
 
 ---
 
-## 13) Response-side inspection (outbound filtering)
+## 14) Response-side inspection (outbound filtering)
 
 ```yaml
 response_rules:
@@ -173,7 +193,7 @@ response_rules:
 
 ---
 
-## 14) Tool metadata rug-pull detection
+## 15) Tool metadata rug-pull detection
 
 ```yaml
 tool_change_rules:
@@ -183,7 +203,7 @@ tool_change_rules:
 
 ---
 
-## 15) Advisory rollout mode (log, don't block)
+## 16) Advisory rollout mode (log, don't block)
 
 Policy:
 
@@ -200,7 +220,7 @@ intent-guard-proxy --advisory --policy schema/policy.yaml --target "<mcp command
 
 ---
 
-## 16) Interactive approvals
+## 17) Interactive approvals
 
 Runtime:
 
@@ -210,7 +230,7 @@ intent-guard-proxy --ask-approval --policy schema/policy.yaml --target "<mcp com
 
 ---
 
-## 17) Webhook approval backend
+## 18) Webhook approval backend
 
 Runtime:
 
@@ -225,7 +245,7 @@ intent-guard-proxy \
 
 ---
 
-## 18) Break-glass controls (runtime env)
+## 19) Break-glass controls (runtime env)
 
 ```bash
 # Basic break-glass
@@ -238,7 +258,7 @@ export INTENT_GUARD_BREAK_GLASS_SIGNING_KEY="<secret>"
 
 ---
 
-## 19) Hot-reload policy without restart
+## 20) Hot-reload policy without restart
 
 Runtime:
 
@@ -248,7 +268,7 @@ intent-guard-proxy --watch-policy --policy schema/policy.yaml --target "<mcp com
 
 ---
 
-## 20) Policy schema validation
+## 21) Policy schema validation
 
 Runtime:
 
@@ -258,7 +278,7 @@ intent-guard-proxy --validate --policy schema/policy.yaml
 
 ---
 
-## 21) Starter secure policy templates
+## 22) Starter secure policy templates
 
 Use one of:
 
@@ -270,7 +290,7 @@ policies/repo-write-guard.yaml
 
 ---
 
-## 22) Native hook integration (Claude / Copilot / Cursor)
+## 23) Native hook integration (Claude / Copilot / Cursor)
 
 Command:
 
@@ -288,7 +308,7 @@ hooks/cursor/hooks.json
 
 ---
 
-## 23) Audit-friendly decision metadata (output contract)
+## 24) Audit-friendly decision metadata (output contract)
 
 No extra policy needed; emitted in decisions/logs automatically:
 

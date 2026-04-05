@@ -8,6 +8,7 @@ It focuses on **preventing dangerous actions before execution**, **detecting dat
 - **Forbidden tool blocking** (`forbidden_tools`)
 - **Protected path enforcement** (`protected_paths`) with traversal-safe normalization
 - **Token budget limits** (`max_tokens_per_call`)
+- **Per-tool sliding-window rate limiting** (`rate_limits`) with opt-in enable/bypass (`enabled: 1` or `0/false`)
 - **Custom per-tool argument policies** (`custom_policies`)
 - **Prompt injection detection** in tool-call arguments
 - **Secret/PII detection** in arguments (keys, tokens, emails, SSN patterns)
