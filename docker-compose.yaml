@@ -1,0 +1,7 @@
+services:
+  test:
+    container_name: test
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m pytest tests
