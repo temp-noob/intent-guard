@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "intent-guard"
+name = "agent-intent-guard"
 version = "0.1.0"
 description = "MCP tool-call guardrails with static and semantic policy checks"
 readme = "README.md"
