@@ -1,3 +1,4 @@
 {
+  "test": ["docker-compose up test"],
   "tests": ["docker-compose up test"]
 }
