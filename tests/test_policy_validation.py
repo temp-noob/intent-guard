@@ -152,3 +152,42 @@ def test_invalid_decision_cache_settings():
     assert any("decision_cache.enabled" in e for e in errors)
     assert any("decision_cache.max_size" in e for e in errors)
     assert any("decision_cache.ttl_seconds" in e for e in errors)
+
+
+def test_valid_rate_limits_enabled_zero():
+    policy = {
+        "static_rules": {
+            "rate_limits": {
+                "enabled": 0,
+                "default": {"max_calls": 10, "window_seconds": 60},
+            }
+        }
+    }
+    errors = validate_policy(policy)
+    assert errors == []
+
+
+def test_valid_rate_limits_enabled_boolean():
+    policy = {
+        "static_rules": {
+            "rate_limits": {
+                "enabled": False,
+                "default": {"max_calls": 10, "window_seconds": 60},
+            }
+        }
+    }
+    errors = validate_policy(policy)
+    assert errors == []
+
+
+def test_invalid_rate_limits_enabled_value():
+    policy = {
+        "static_rules": {
+            "rate_limits": {
+                "enabled": 2,
+                "default": {"max_calls": 10, "window_seconds": 60},
+            }
+        }
+    }
+    errors = validate_policy(policy)
+    assert any("static_rules.rate_limits.enabled" in e for e in errors)

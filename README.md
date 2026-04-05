@@ -87,6 +87,15 @@ static_rules:
   forbidden_tools: ["delete_database", "purge_all"]
   protected_paths: ["/etc/*", ".env", "src/auth/*"]
   max_tokens_per_call: 4000
+  rate_limits:
+    enabled: 1 # required to turn rate limiting on; 0/false bypasses checks
+    default:
+      max_calls: 60
+      window_seconds: 60
+    by_tool:
+      write_file:
+        max_calls: 10
+        window_seconds: 60
 
 custom_policies:
   - tool_name: write_file

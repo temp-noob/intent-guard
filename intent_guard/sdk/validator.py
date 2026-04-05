@@ -88,6 +88,64 @@ def _validate_static_rules(rules: Any) -> list[str]:
     if "decode_arguments" in rules and not isinstance(rules["decode_arguments"], bool):
         errors.append("'static_rules.decode_arguments' must be boolean")
 
+    if "rate_limits" in rules:
+        rate_limits = rules["rate_limits"]
+        if not isinstance(rate_limits, dict):
+            errors.append("'static_rules.rate_limits' must be a dict")
+        else:
+            if "enabled" in rate_limits:
+                enabled = rate_limits["enabled"]
+                if not (
+                    isinstance(enabled, bool)
+                    or (isinstance(enabled, int) and not isinstance(enabled, bool) and enabled in {0, 1})
+                ):
+                    errors.append("'static_rules.rate_limits.enabled' must be boolean or 0/1 integer")
+
+            if "default" in rate_limits:
+                errors.extend(_validate_rate_limit_entry(rate_limits["default"], "static_rules.rate_limits.default"))
+
+            if "by_tool" in rate_limits:
+                by_tool = rate_limits["by_tool"]
+                if not isinstance(by_tool, dict):
+                    errors.append("'static_rules.rate_limits.by_tool' must be a dict")
+                else:
+                    for tool_name, tool_rate_limit in by_tool.items():
+                        if not isinstance(tool_name, str):
+                            errors.append("'static_rules.rate_limits.by_tool' keys must be strings")
+                            continue
+                        errors.extend(
+                            _validate_rate_limit_entry(
+                                tool_rate_limit,
+                                f"static_rules.rate_limits.by_tool.{tool_name}",
+                            )
+                        )
+
+    return errors
+
+
+def _validate_rate_limit_entry(rate_limit: Any, key_path: str) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(rate_limit, dict):
+        return [f"'{key_path}' must be a dict with 'max_calls' and 'window_seconds'"]
+
+    if "max_calls" not in rate_limit:
+        errors.append(f"'{key_path}.max_calls' is required")
+    else:
+        max_calls = rate_limit["max_calls"]
+        if not isinstance(max_calls, int) or isinstance(max_calls, bool) or max_calls <= 0:
+            errors.append(f"'{key_path}.max_calls' must be a positive integer")
+
+    if "window_seconds" not in rate_limit:
+        errors.append(f"'{key_path}.window_seconds' is required")
+    else:
+        window_seconds = rate_limit["window_seconds"]
+        if (
+            not isinstance(window_seconds, (int, float))
+            or isinstance(window_seconds, bool)
+            or window_seconds <= 0
+        ):
+            errors.append(f"'{key_path}.window_seconds' must be a positive number")
+
     return errors
 
 

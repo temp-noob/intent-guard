@@ -135,8 +135,59 @@ class TestReset:
 class TestFromConfig:
     """Build limiter from policy config dict."""
 
+    def test_from_config_without_enabled_is_disabled(self):
+        limiter = ToolRateLimiter.from_config({
+            "default": {"max_calls": 1, "window_seconds": 60},
+        })
+        allowed_first, _ = limiter.check("write_file", now=100.0)
+        allowed_second, _ = limiter.check("write_file", now=100.0)
+        assert allowed_first is True
+        assert allowed_second is True
+
+    def test_from_config_enabled_zero_disables_limiter(self):
+        limiter = ToolRateLimiter.from_config({
+            "enabled": 0,
+            "default": {"max_calls": 1, "window_seconds": 60},
+        })
+        allowed_first, _ = limiter.check("write_file", now=100.0)
+        allowed_second, reason = limiter.check("write_file", now=100.0)
+        assert allowed_first is True
+        assert allowed_second is True
+        assert "disabled" in reason
+
+    def test_from_config_enabled_false_disables_limiter(self):
+        limiter = ToolRateLimiter.from_config({
+            "enabled": False,
+            "default": {"max_calls": 1, "window_seconds": 60},
+        })
+        allowed_first, _ = limiter.check("write_file", now=100.0)
+        allowed_second, _ = limiter.check("write_file", now=100.0)
+        assert allowed_first is True
+        assert allowed_second is True
+
+    def test_from_config_enabled_one_enables_limiter(self):
+        limiter = ToolRateLimiter.from_config({
+            "enabled": 1,
+            "default": {"max_calls": 1, "window_seconds": 60},
+        })
+        allowed_first, _ = limiter.check("write_file", now=100.0)
+        allowed_second, _ = limiter.check("write_file", now=100.0)
+        assert allowed_first is True
+        assert allowed_second is False
+
+    def test_from_config_enabled_true_enables_limiter(self):
+        limiter = ToolRateLimiter.from_config({
+            "enabled": True,
+            "default": {"max_calls": 1, "window_seconds": 60},
+        })
+        allowed_first, _ = limiter.check("write_file", now=100.0)
+        allowed_second, _ = limiter.check("write_file", now=100.0)
+        assert allowed_first is True
+        assert allowed_second is False
+
     def test_from_config(self):
         config = {
+            "enabled": 1,
             "default": {"max_calls": 60, "window_seconds": 60},
             "by_tool": {
                 "write_file": {"max_calls": 10, "window_seconds": 60},
@@ -194,6 +245,7 @@ class TestEngineRateLimitIntegration:
 
     def test_engine_blocks_after_limit(self):
         engine = self._make_engine({
+            "enabled": 1,
             "default": {"max_calls": 2, "window_seconds": 60},
         })
         d1 = engine.evaluate_tool_call("read_file", {})
@@ -206,6 +258,19 @@ class TestEngineRateLimitIntegration:
         assert d3.code == "BLOCK_RATE_LIMIT"
         assert d3.severity == "medium"
 
+    def test_engine_rate_limits_enabled_zero_bypasses_check(self):
+        engine = self._make_engine({
+            "enabled": 0,
+            "default": {"max_calls": 1, "window_seconds": 60},
+        })
+        d1 = engine.evaluate_tool_call("read_file", {})
+        d2 = engine.evaluate_tool_call("read_file", {})
+        d3 = engine.evaluate_tool_call("read_file", {})
+        assert d1.allowed is True
+        assert d2.allowed is True
+        assert d3.allowed is True
+        assert d3.code != "BLOCK_RATE_LIMIT"
+
     def test_engine_no_rate_limits_configured(self):
         engine = IntentGuardEngine(policy={"static_rules": {}})
         decision = engine.evaluate_tool_call("any_tool", {})
@@ -213,6 +278,7 @@ class TestEngineRateLimitIntegration:
 
     def test_engine_reload_policy_rebuilds_limiter(self):
         engine = self._make_engine({
+            "enabled": 1,
             "default": {"max_calls": 1, "window_seconds": 60},
         })
         engine.evaluate_tool_call("tool", {})
@@ -225,6 +291,7 @@ class TestEngineRateLimitIntegration:
             "version": "1.0",
             "static_rules": {
                 "rate_limits": {
+                    "enabled": 1,
                     "default": {"max_calls": 100, "window_seconds": 60},
                 },
             },
