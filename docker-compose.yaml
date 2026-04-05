@@ -1,0 +1,6 @@
+services:
+  test:
+    container_name: test
+    build:
+      context: .
+      dockerfile: Dockerfile
