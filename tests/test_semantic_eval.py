@@ -39,7 +39,7 @@ def test_semantic_eval_dataset_reports_metrics():
     policy = {
         "semantic_rules": {
             "mode": "enforce",
-            "prompt_version": "v1",
+            "prompt_version": "v2",
             "critical_intent_threshold": 0.85,
             "constraints": [{"intent": "repo_safety", "allowed_scope": "task aligned only"}],
         }

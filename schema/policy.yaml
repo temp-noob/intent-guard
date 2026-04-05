@@ -48,7 +48,7 @@ static_rules:
 semantic_rules:
   provider: ollama
   mode: enforce
-  prompt_version: "v1"
+  prompt_version: "v2"
   guardrail_model: llama3.1:8b
   critical_intent_threshold: 0.85
   retry_attempts: 2

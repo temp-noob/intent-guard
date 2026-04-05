@@ -16,8 +16,15 @@ from uuid import uuid4
 import yaml
 
 from intent_guard.sdk.decision_cache import SemanticDecisionCache
-from intent_guard.sdk.providers import GuardrailProvider, SemanticProviderUnavailable
 from intent_guard.sdk.rate_limiter import ToolRateLimiter
+from intent_guard.sdk.providers import (
+    DEFAULT_RUBRIC_DIMENSIONS,
+    GuardrailProvider,
+    SemanticProviderUnavailable,
+    SemanticVerdict,
+    compute_rubric_score,
+    _parse_rubric_verdict,
+)
 
 
 @dataclass
@@ -35,6 +42,7 @@ class GuardDecision:
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
     override: dict[str, Any] | None = None
     semantic_prompt_version: str | None = None
+    dimension_scores: dict[str, Any] | None = None
 
 
 class IntentGuardEngine:
@@ -273,15 +281,19 @@ class IntentGuardEngine:
             )
 
         threshold = float(semantic_rules.get("critical_intent_threshold", 0.85))
-        prompt_version = str(semantic_rules.get("prompt_version", "v1"))
-        prompt = self._build_semantic_prompt(
+        prompt_version = str(semantic_rules.get("prompt_version", "v2"))
+
+        rubric_dims, rubric_weights = self._resolve_rubric_config(semantic_rules)
+        prompt = self._build_rubric_prompt(
             tool_name,
             arguments,
             task_context,
             semantic_rules.get("constraints", []),
             prompt_version,
+            rubric_dims,
             semantic_example_name,
         )
+
         cache_config = semantic_rules.get("decision_cache", {})
         cache_enabled = bool(cache_config.get("enabled", False))
         cache_key = self.semantic_cache.make_key(tool_name, arguments, task_context)
@@ -291,25 +303,33 @@ class IntentGuardEngine:
                 verdict = cached
             else:
                 try:
-                    verdict = self.provider.judge(prompt)
+                    raw_verdict = self.provider.judge(prompt)
                 except SemanticProviderUnavailable as exc:
                     return self._semantic_provider_failure_decision(
                         tool_name=tool_name,
                         semantic_rules=semantic_rules,
                         reason=str(exc) or "semantic provider failed",
                     )
+                verdict = self._reparse_as_rubric(raw_verdict, rubric_weights)
                 self.semantic_cache.set(cache_key, verdict)
         else:
             try:
-                verdict = self.provider.judge(prompt)
+                raw_verdict = self.provider.judge(prompt)
             except SemanticProviderUnavailable as exc:
                 return self._semantic_provider_failure_decision(
                     tool_name=tool_name,
                     semantic_rules=semantic_rules,
                     reason=str(exc) or "semantic provider failed",
                 )
+            verdict = self._reparse_as_rubric(raw_verdict, rubric_weights)
 
-        if verdict.safe and verdict.score >= threshold:
+        dim_scores = None
+        if verdict.dimensions:
+            dim_scores = {d.name: {"passed": d.passed, "evidence": d.evidence} for d in verdict.dimensions}
+
+        is_passing = verdict.score >= threshold
+
+        if is_passing:
             return self._decision(
                 allowed=True,
                 reason="semantic checks passed",
@@ -318,6 +338,7 @@ class IntentGuardEngine:
                 severity="info",
                 rule_id="semantic.threshold",
                 semantic_prompt_version=prompt_version,
+                dimension_scores=dim_scores,
             )
         if mode == "advisory":
             advisory_reason = verdict.reason or f"semantic advisory alert (score={verdict.score:.2f})"
@@ -329,6 +350,7 @@ class IntentGuardEngine:
                 severity="warning",
                 rule_id="semantic.advisory",
                 semantic_prompt_version=prompt_version,
+                dimension_scores=dim_scores,
             )
         blocked_reason = verdict.reason or f"semantic check failed (score={verdict.score:.2f})"
         return self._decision(
@@ -340,6 +362,7 @@ class IntentGuardEngine:
             severity="high",
             rule_id="semantic.threshold",
             semantic_prompt_version=prompt_version,
+            dimension_scores=dim_scores,
         )
 
     def _semantic_provider_failure_decision(
@@ -505,15 +528,21 @@ class IntentGuardEngine:
         )
 
     @staticmethod
-    def _build_semantic_prompt(
+    def _build_rubric_prompt(
         tool_name: str,
         arguments: dict[str, Any],
         task_context: str | None,
         constraints: list[dict[str, Any]],
         prompt_version: str,
+        dimensions: list[dict[str, str]],
         semantic_example_name: str | None = None,
     ) -> str:
         constraint_text = json.dumps(constraints, indent=2, sort_keys=True)
+        dim_lines = "\n".join(
+            f'  - "{d["name"]}": {d["question"]}' for d in dimensions
+        )
+        dim_keys = ", ".join(f'"{d["name"]}": {{"pass": <bool>, "evidence": "<why>"}}'
+                             for d in dimensions)
         return (
             "You are a policy guardrail evaluator.\n"
             f"PromptVersion: {prompt_version}\n"
@@ -522,11 +551,61 @@ class IntentGuardEngine:
             f"ToolName: {tool_name}\n"
             f"Arguments: {json.dumps(arguments, sort_keys=True)}\n"
             f"PolicyConstraints: {constraint_text}\n\n"
-            "Return a strict JSON object only with keys:\n"
-            '  {"safe": <boolean>, "score": <number 0.0..1.0>, "reason": <string>}\n'
+            "Evaluate the tool call on each dimension below.\n"
+            "For each dimension, answer pass=true if the condition is met, "
+            "pass=false if not. Provide brief evidence.\n\n"
+            f"Dimensions:\n{dim_lines}\n\n"
+            "Return a strict JSON object with this structure:\n"
+            "{\n"
+            f'  "dimensions": {{{dim_keys}}},\n'
+            '  "safe": <boolean — true only if ALL dimensions pass>,\n'
+            '  "reason": "<concise summary>"\n'
+            "}\n"
             "Rules:\n"
-            "- safe=true only when call is policy-aligned with low risk.\n"
-            "- score is confidence that the call is safe under constraints.\n"
+            "- Each dimension must have exactly 'pass' (boolean) and 'evidence' (string).\n"
+            "- safe=true only when every dimension passes.\n"
             "- reason must be concise and specific.\n"
             "- No markdown, no extra text."
         )
+
+    @staticmethod
+    def _resolve_rubric_config(
+        semantic_rules: dict[str, Any],
+    ) -> tuple[list[dict[str, str]], dict[str, float]]:
+        """Return (dimensions_for_prompt, weights_dict) from policy config."""
+        scoring = semantic_rules.get("scoring", {})
+        configured_dims = scoring.get("dimensions", {})
+        if not configured_dims:
+            dims = DEFAULT_RUBRIC_DIMENSIONS
+            weights = {d["name"]: d["weight"] for d in dims}
+        else:
+            dims = []
+            weights = {}
+            defaults_by_name = {d["name"]: d for d in DEFAULT_RUBRIC_DIMENSIONS}
+            for name, cfg in configured_dims.items():
+                default = defaults_by_name.get(name, {})
+                question = cfg.get("question") or default.get("question", f"Evaluate '{name}'.")
+                weight = float(cfg.get("weight", default.get("weight", 0.25)))
+                dims.append({"name": name, "question": question, "weight": weight})
+                weights[name] = weight
+        return dims, weights
+
+    @staticmethod
+    def _reparse_as_rubric(verdict, rubric_weights: dict[str, float]):
+        """Re-parse a provider verdict's raw text as rubric format.
+
+        Preserves the original verdict's reason if the reparsed result has none.
+        """
+        try:
+            reparsed = _parse_rubric_verdict(verdict.raw, rubric_weights)
+        except (ValueError, KeyError):
+            return verdict
+        if not reparsed.reason and verdict.reason:
+            reparsed = SemanticVerdict(
+                safe=reparsed.safe,
+                score=reparsed.score,
+                raw=reparsed.raw,
+                reason=verdict.reason,
+                dimensions=reparsed.dimensions,
+            )
+        return reparsed

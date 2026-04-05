@@ -89,7 +89,7 @@ def test_valid_complex_policy():
         "semantic_rules": {
             "provider": "ollama",
             "mode": "enforce",
-            "prompt_version": "v1",
+            "prompt_version": "v2",
             "critical_intent_threshold": 0.85,
             "constraints": [
                 {"intent": "modify_source_code", "allowed_scope": "UI only"},

@@ -126,14 +126,25 @@ semantic_rules:
 
 ---
 
-## 10) Structured semantic verdicts + prompt versioning
+## 10) Multi-signal rubric scoring
 
 ```yaml
 semantic_rules:
-  prompt_version: "v1"
+  prompt_version: "v2"
+  critical_intent_threshold: 0.85
+  scoring:
+    dimensions:
+      tool_task_alignment:
+        weight: 0.25
+      argument_scope_compliance:
+        weight: 0.30
+      no_forbidden_scope_violation:
+        weight: 0.30
+      no_side_effect_risk:
+        weight: 0.15
 ```
 
-Note: structured verdict parsing is built into the semantic provider path; this setting versions the prompt used for those verdicts.
+The LLM evaluates each dimension as pass/fail with evidence. The score is computed deterministically: `Σ(weight × pass) / Σ(weight)`. Decisions include `dimension_scores` for auditability. Omit `scoring` to use defaults.
 
 ---
 
@@ -349,7 +360,7 @@ semantic_rules:
   provider: ollama
   guardrail_model: llama3.1:8b
   mode: advisory
-  prompt_version: "v1"
+  prompt_version: "v2"
   critical_intent_threshold: 0.85
   retry_attempts: 2
   retry_base_delay_seconds: 0.25
@@ -426,7 +437,7 @@ semantic_rules:
   provider: ollama
   guardrail_model: llama3.1:8b
   mode: enforce
-  prompt_version: "v1"
+  prompt_version: "v2"
   critical_intent_threshold: 0.9
   retry_attempts: 2
   retry_base_delay_seconds: 0.25

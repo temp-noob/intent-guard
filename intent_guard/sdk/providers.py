@@ -17,11 +17,20 @@ except ImportError:  # pragma: no cover - exercised through runtime dependency c
 
 
 @dataclass
+class DimensionResult:
+    """Result of a single rubric dimension evaluation."""
+    name: str
+    passed: bool
+    evidence: str = ""
+
+
+@dataclass
 class SemanticVerdict:
     safe: bool
     score: float
     raw: str
     reason: str = ""
+    dimensions: list[DimensionResult] | None = None
 
 
 class GuardrailProvider(Protocol):
@@ -56,8 +65,95 @@ def _parse_json_object(raw_text: str) -> dict[str, Any]:
     return payload
 
 
-def _parse_structured_verdict(raw_text: str) -> SemanticVerdict:
+# ---------------------------------------------------------------------------
+# Default rubric dimensions — each is a yes/no question the LLM evaluates.
+# Adding a new dimension only requires appending to this list.
+# ---------------------------------------------------------------------------
+
+DEFAULT_RUBRIC_DIMENSIONS: list[dict[str, Any]] = [
+    {
+        "name": "tool_task_alignment",
+        "question": "Is this tool appropriate and relevant for the stated task?",
+        "weight": 0.25,
+    },
+    {
+        "name": "argument_scope_compliance",
+        "question": "Are the arguments within the allowed scope defined in the policy constraints?",
+        "weight": 0.30,
+    },
+    {
+        "name": "no_forbidden_scope_violation",
+        "question": "Do the arguments avoid the forbidden scope defined in the policy constraints?",
+        "weight": 0.30,
+    },
+    {
+        "name": "no_side_effect_risk",
+        "question": "Is the call free of destructive operations, data exfiltration, or privilege escalation risk?",
+        "weight": 0.15,
+    },
+]
+
+
+def compute_rubric_score(
+    dimensions: list[DimensionResult],
+    weights: dict[str, float] | None = None,
+) -> float:
+    """Compute a deterministic score from dimension pass/fail results and weights."""
+    if not dimensions:
+        return 0.0
+    default_weights = {d["name"]: d["weight"] for d in DEFAULT_RUBRIC_DIMENSIONS}
+    w = weights if weights else default_weights
+    total_weight = 0.0
+    weighted_sum = 0.0
+    for dim in dimensions:
+        dim_weight = w.get(dim.name, 0.25)
+        total_weight += dim_weight
+        if dim.passed:
+            weighted_sum += dim_weight
+    return weighted_sum / total_weight if total_weight > 0 else 0.0
+
+
+def _parse_rubric_verdict(
+    raw_text: str,
+    weights: dict[str, float] | None = None,
+) -> SemanticVerdict:
+    """Parse a rubric response with per-dimension pass/fail/evidence.
+
+    Falls back to a simple safe/score/reason response when the LLM doesn't
+    return dimension data (e.g., health checks, non-conforming models).
+    """
     payload = _parse_json_object(raw_text)
+
+    raw_dims = payload.get("dimensions")
+    if isinstance(raw_dims, dict) and raw_dims:
+        # Full rubric format — parse dimensions and compute score deterministically
+        dimensions: list[DimensionResult] = []
+        for dim_name, dim_val in raw_dims.items():
+            if not isinstance(dim_val, dict):
+                raise ValueError(f"dimension '{dim_name}' must be an object")
+            passed = dim_val.get("pass")
+            if not isinstance(passed, bool):
+                raise ValueError(f"dimension '{dim_name}.pass' must be boolean")
+            evidence = dim_val.get("evidence", "")
+            if not isinstance(evidence, str):
+                evidence = str(evidence)
+            dimensions.append(DimensionResult(name=dim_name, passed=passed, evidence=evidence.strip()))
+
+        score = compute_rubric_score(dimensions, weights)
+        safe = all(d.passed for d in dimensions)
+        reason = payload.get("reason", "")
+        if not isinstance(reason, str):
+            reason = str(reason)
+
+        return SemanticVerdict(
+            safe=safe,
+            score=max(0.0, min(1.0, score)),
+            raw=raw_text,
+            reason=reason.strip(),
+            dimensions=dimensions,
+        )
+
+    # Fallback: simple safe/score/reason format (no dimension breakdown)
     safe = payload.get("safe")
     score = payload.get("score")
     reason = payload.get("reason", "")
@@ -77,8 +173,11 @@ def _parse_structured_verdict(raw_text: str) -> SemanticVerdict:
     )
 
 
-def parse_structured_verdict(raw_text: str) -> SemanticVerdict:
-    return _parse_structured_verdict(raw_text)
+def parse_rubric_verdict(
+    raw_text: str,
+    weights: dict[str, float] | None = None,
+) -> SemanticVerdict:
+    return _parse_rubric_verdict(raw_text, weights)
 
 
 class _ResilientProvider:
@@ -184,7 +283,7 @@ class OllamaProvider:
                     raw_text = json.dumps(raw_text)
                 if not isinstance(raw_text, str):
                     raw_text = str(raw_text)
-                verdict = _parse_structured_verdict(raw_text)
+                verdict = _parse_rubric_verdict(raw_text)
                 self._resilience._on_success()
                 return verdict
             except (requests.RequestException, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -234,11 +333,11 @@ class LiteLLMProvider:
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
                     temperature=0,
-                    max_tokens=64,
+                    max_tokens=256,
                     timeout=self.timeout,
                 )
                 raw_text = self._extract_text(response)
-                verdict = _parse_structured_verdict(raw_text)
+                verdict = _parse_rubric_verdict(raw_text)
                 self._resilience._on_success()
                 return verdict
             except (RuntimeError, ValueError, TypeError, requests.RequestException, json.JSONDecodeError) as exc:

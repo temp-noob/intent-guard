@@ -225,6 +225,26 @@ def _validate_semantic_rules(rules: Any) -> list[str]:
                 if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
                     errors.append("'semantic_rules.decision_cache.ttl_seconds' must be a positive integer")
 
+    if "scoring" in rules:
+        scoring = rules["scoring"]
+        if not isinstance(scoring, dict):
+            errors.append("'semantic_rules.scoring' must be a dict")
+        elif "dimensions" in scoring:
+            dims = scoring["dimensions"]
+            if not isinstance(dims, dict):
+                errors.append("'semantic_rules.scoring.dimensions' must be a dict")
+            else:
+                for dim_name, dim_cfg in dims.items():
+                    if not isinstance(dim_cfg, dict):
+                        errors.append(f"'semantic_rules.scoring.dimensions.{dim_name}' must be a dict")
+                        continue
+                    if "weight" in dim_cfg:
+                        w = dim_cfg["weight"]
+                        if not isinstance(w, (int, float)) or isinstance(w, bool) or w < 0:
+                            errors.append(
+                                f"'semantic_rules.scoring.dimensions.{dim_name}.weight' must be a non-negative number"
+                            )
+
     return errors
 
 

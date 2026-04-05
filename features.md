@@ -18,6 +18,7 @@ It focuses on **preventing dangerous actions before execution**, **detecting dat
 
 - **Semantic intent evaluation** against task context and constraints
 - **Structured JSON semantic verdicts** (`safe`, `score`, `reason`) for deterministic parsing
+- **Multi-signal rubric scoring (v2)**: decomposes opaque LLM score into binary pass/fail dimensions (`tool_task_alignment`, `argument_scope_compliance`, `no_forbidden_scope_violation`, `no_side_effect_risk`) with per-dimension evidence and configurable weights
 - **Prompt versioning** (`semantic_rules.prompt_version`) for auditability/change control
 - **Provider resilience**: retries, jitter, circuit breaker, and per-tool fail modes
 - **Decision caching (LRU + TTL)** for repeated semantic checks
