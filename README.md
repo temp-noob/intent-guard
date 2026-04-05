@@ -106,7 +106,7 @@ custom_policies:
 semantic_rules:
   provider: ollama # or litellm
   mode: enforce # off | enforce | advisory
-  prompt_version: "v1"
+  prompt_version: "v2"
   guardrail_model: llama3.1:8b
   critical_intent_threshold: 0.85
   retry_attempts: 2
@@ -124,6 +124,44 @@ semantic_rules:
       allowed_scope: Actions must only affect UI components or styles.
       forbidden_scope: Should not modify database schemas or auth logic.
 ```
+
+### Rubric scoring (v2)
+
+Set `prompt_version: "v2"` to switch from opaque LLM-assigned scores to
+multi-signal rubric scoring. Instead of asking the LLM for a single confidence
+number, the engine asks concrete yes/no questions across multiple dimensions
+and computes the score deterministically from the answers.
+
+```yaml
+semantic_rules:
+  prompt_version: "v2"
+  critical_intent_threshold: 0.85
+  scoring:
+    dimensions:
+      tool_task_alignment:
+        weight: 0.25
+      argument_scope_compliance:
+        weight: 0.30
+      no_forbidden_scope_violation:
+        weight: 0.30
+      no_side_effect_risk:
+        weight: 0.15
+```
+
+Default dimensions (used when `scoring` is omitted):
+
+| Dimension | Question | Default weight |
+|---|---|---|
+| `tool_task_alignment` | Is this tool appropriate for the stated task? | 0.25 |
+| `argument_scope_compliance` | Are arguments within the allowed scope? | 0.30 |
+| `no_forbidden_scope_violation` | Do arguments avoid the forbidden scope? | 0.30 |
+| `no_side_effect_risk` | Is the call free of destructive/exfil risk? | 0.15 |
+
+Score formula: `Σ(weight × pass) / Σ(weight)`. With 4 equal-pass dimensions
+the score is 1.0; any single failure drops below the 0.85 threshold.
+
+Decisions include `dimension_scores` with per-dimension `passed` and
+`evidence` for full auditability.
 
 ## CLI usage
 

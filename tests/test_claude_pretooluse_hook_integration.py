@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-CLAUDE_MARK = getattr(pytest.mark, "cc-ig-integration")
+pytestmark = pytest.mark.cc_ig_integration
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -28,7 +28,6 @@ def _run_pretooluse_hook_command(
     )
 
 
-@CLAUDE_MARK
 def test_claude_pretooluse_hook_runs_intent_guard_evaluate(tmp_path: Path):
     if shutil.which("claude") is None and shutil.which("claude-code") is None:
         pytest.skip("requires claude-code installation")

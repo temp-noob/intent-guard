@@ -107,7 +107,16 @@ def test_phase3_ollama_semantic_judging(monkeypatch):
             return None
 
         def json(self):
-            return {"response": '{"safe": false, "score": 0.91, "reason": "violates task scope"}'}
+            return {"response": json.dumps({
+                "dimensions": {
+                    "tool_task_alignment": {"pass": False, "evidence": "edit tool for auth file, task is UI only"},
+                    "argument_scope_compliance": {"pass": False, "evidence": "path src/auth/handler.py outside UI scope"},
+                    "no_forbidden_scope_violation": {"pass": False, "evidence": "auth module is forbidden"},
+                    "no_side_effect_risk": {"pass": True, "evidence": "no destructive ops"},
+                },
+                "safe": False,
+                "reason": "violates task scope",
+            })}
 
     def fake_post(url, json, timeout):  # noqa: A002
         assert url.endswith("/api/generate")
@@ -134,7 +143,7 @@ def test_phase3_ollama_semantic_judging(monkeypatch):
     )
     assert decision.allowed is False
     assert decision.requires_approval is True
-    assert decision.semantic_prompt_version == "v1"
+    assert decision.semantic_prompt_version == "v2"
 
 
 def test_phase4_feedback_loop_pause_and_resume():
@@ -287,7 +296,7 @@ def test_semantic_mode_advisory_allows_but_records_alert():
     assert decision.code == "ALLOW_SEMANTIC_ADVISORY"
     assert decision.severity == "warning"
     assert decision.reason == "context mismatch"
-    assert decision.semantic_prompt_version == "v1"
+    assert decision.semantic_prompt_version == "v2"
 
 
 def test_semantic_provider_fail_mode_can_be_per_tool():
@@ -348,7 +357,17 @@ def test_litellm_provider_uses_retries_and_env_model(monkeypatch):
         assert kwargs["response_format"] == {"type": "json_object"}
         if attempts["count"] == 1:
             raise RuntimeError("transient error")
-        return {"choices": [{"message": {"content": '{"safe": true, "score": 0.92, "reason": "aligned"}'}}]}
+        rubric_json = json.dumps({
+            "dimensions": {
+                "tool_task_alignment": {"pass": True, "evidence": "aligned"},
+                "argument_scope_compliance": {"pass": True, "evidence": "in scope"},
+                "no_forbidden_scope_violation": {"pass": True, "evidence": "clean"},
+                "no_side_effect_risk": {"pass": True, "evidence": "safe"},
+            },
+            "safe": True,
+            "reason": "aligned",
+        })
+        return {"choices": [{"message": {"content": rubric_json}}]}
 
     monkeypatch.setenv("LLM_MODEL", "claude-3-5-sonnet-20241022")
     monkeypatch.setattr("intent_guard.sdk.providers.litellm_completion", fake_completion)
@@ -357,7 +376,7 @@ def test_litellm_provider_uses_retries_and_env_model(monkeypatch):
 
     verdict = provider.judge("prompt")
     assert verdict.safe is True
-    assert verdict.score == 0.92
+    assert verdict.score == pytest.approx(1.0)
     assert attempts["count"] == 2
 
 
