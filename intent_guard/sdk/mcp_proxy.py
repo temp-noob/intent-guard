@@ -15,6 +15,7 @@ from typing import Any, Callable
 import requests
 
 from intent_guard.sdk.engine import GuardDecision, IntentGuardEngine
+from intent_guard.sdk.log_redactor import LogRedactor
 from intent_guard.sdk.response_guard import ResponseGuard
 from intent_guard.sdk.tool_snapshot import ToolSnapshotStore
 
@@ -106,12 +107,23 @@ class MCPProxy:
         self.logger = logger
         self.advisory_mode = advisory_mode
         self.response_guard = ResponseGuard(self.engine.policy.get("response_rules", {}))
+        self.log_redactor = self._build_log_redactor()
         self.detect_tool_changes = bool(self.engine.policy.get("tool_change_rules", {}).get("enabled", False))
         self.tool_change_action = str(self.engine.policy.get("tool_change_rules", {}).get("action", "warn")).lower()
         if self.tool_change_action not in {"warn", "block"}:
             self.tool_change_action = "warn"
         self.server_id = " ".join(self.target_command) if self.target_command else "default-server"
         self.tool_snapshot_store = ToolSnapshotStore()
+
+    def _build_log_redactor(self) -> LogRedactor | None:
+        static_rules = self.engine.policy.get("static_rules", {})
+        patterns = static_rules.get("sensitive_data_patterns", [])
+        if not patterns:
+            return None
+        redact_logs = static_rules.get("redact_logs", True)
+        if not redact_logs:
+            return None
+        return LogRedactor(patterns)
 
     def process_client_message(self, message: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         if message.get("method") != "tools/call":
@@ -206,6 +218,8 @@ class MCPProxy:
             "semantic_prompt_version": decision.semantic_prompt_version,
             "would_block": not decision.allowed,
         }
+        if self.log_redactor is not None:
+            entry = self.log_redactor.redact(entry)
         if self.logger is not None:
             self.logger(entry)
         else:
